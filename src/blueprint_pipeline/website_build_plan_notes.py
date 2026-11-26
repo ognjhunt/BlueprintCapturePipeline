@@ -120,18 +120,81 @@ def _names(rows: Sequence[Mapping[str, Any]]) -> str:
     return ", ".join(named[:-1]) + (" and " if len(named) > 1 else "") + named[-1] if named else ""
 
 
-def plan_notes(decided: Mapping[str, Any] | None, budget: Mapping[str, Any] | None = None) -> list[str]:
+def plan_names(decided: Mapping[str, Any] | None) -> dict[str, str]:
+    """Each object of the sealed plan by its target, in plain object words only (``plain_name``)."""
+    plan = ((decided or {}).get("build_plan") or {}).get("plan") or {}
+    return {str(row["target_id"]): plain_name(row) for row in plan.get("objects") or []
+            if isinstance(row, Mapping) and isinstance(row.get("target_id"), str)}
+
+
+#: Why a further object of the job was left in the scan as filmed, by the reason code its preparation recorded
+#: (``website_further_objects``; named here, since that module is the build path): its code up to the first ``:``, and
+#: for an overlap, what it meets. Any other code is said as ``LEFT_FOR_ANOTHER_REASON``, never guessed at.
+LEFT_WORDS = {"further_object_needs_artisan": "it needs a model Blueprint would generate, and none was made for it",
+              "further_object_not_tracked": "Blueprint could not follow it through the video's frames",
+              "further_object_scene_not_registered": "the room scan could not be lined up with the video",
+              "further_object_support_not_found": "no surface under it was found in the room scan",
+              "further_object_authoring_failed": "Blueprint could not make a shape of its size",
+              "further_object_static_check_failed": "its file did not pass Blueprint's static check",
+              "further_object_input_invalid": "the plan's entry for it could not be used",
+              "website_preparation_further_objects_left_out": "the simulation's request could not take it",
+              "scene_intake_task_additional_objects_strategy_invalid": "this kind of job takes no further objects"}
+OVERLAP_WORDS = {"scored_object_start": "where the video shows it, it would overlap the job's object",
+                 "scored_object_destination": "where the video shows it, it would overlap where the job's object goes",
+                 "further_object_rank": "where the video shows it, it would overlap another of the job's objects"}
+LEFT_FOR_ANOTHER_REASON = "a step that builds it could not be completed"
+#: What happened to the plan's further objects (``further``, the half's preparation's record as
+#: ``website_half_preparation.further_objects`` reads it).
+BUILT_TOO = "Also built as {its} own object{s}, where the video shows {them}: {names}."
+LEFT_IN_SCAN = "Left in the scan as filmed, not built on its own: {name}, because {why}."
+
+
+def left_words(code: Any) -> str:
+    """Why a further object stayed in the scan as filmed, in plain words, from its reason code."""
+    head, _, detail = str(code).partition(":")
+    if head == "further_object_overlaps":
+        return next((words for key, words in OVERLAP_WORDS.items() if detail.startswith(key)), LEFT_FOR_ANOTHER_REASON)
+    return LEFT_WORDS.get(head, LEFT_FOR_ANOTHER_REASON)
+
+
+def _further(rows: Sequence[Mapping[str, Any]], further: Mapping[str, Any] | None,
+             capped: set[str]) -> tuple[set[str], list[str]]:
+    """The plan's targets the half's preparation decided on as further objects, and what it did with each, in words:
+    those it built, then each it left in the scan with why, by rank; one a limit on paid work kept (``capped``) is said
+    once, by ``KEPT_AT_CAP_NOTE``."""
+    composed = [row for row in (further or {}).get("composed") or [] if isinstance(row, Mapping)]
+    left = [row for row in (further or {}).get("left_in_scan") or [] if isinstance(row, Mapping)
+            and str(row.get("target_id")) not in capped]
+    names = {str(row.get("target_id")): plain_name(row) for row in rows}
+    built = [names.get(str(row.get("target_id")), UNNAMED) for row in composed]
+    notes = [BUILT_TOO.format(its="its" if len(built) == 1 else "their", s="" if len(built) == 1 else "s",
+                              them="it" if len(built) == 1 else "them",
+                              names=", ".join(built[:-1]) + (" and " if len(built) > 1 else "") + built[-1])
+             ] if built else []
+    notes += [LEFT_IN_SCAN.format(name=names.get(str(row.get("target_id")), UNNAMED), why=left_words(row.get("reason")))
+              for row in left]
+    return {str(row.get("target_id")) for row in [*composed, *left]}, notes
+
+
+def plan_notes(decided: Mapping[str, Any] | None, budget: Mapping[str, Any] | None = None,
+               further: Mapping[str, Any] | None = None) -> list[str]:
     """The plan in plain words for the company's README: what the simulation needs, which object the plan takes out
     of the scan to build on its own, which it keeps in the scan as filmed, what the video does not show. Each is the
     plan's choice, never that anything was built: the package's own notes say whether the object was prepared. Kept
     objects are named only where nothing else was erased (one object taken out alone, or the planner's removals not
     applied); on today's one-object route the editor erases what the planner asked. An object a limit on the job's paid
     work kept out of the build (``budget``, ``website_build_budget``) is named once, in words true of either limit.
-    Every object is named in plain object words only (``plain_name``), never as the plan wrote it."""
+    Every object is named in plain object words only (``plain_name``), never as the plan wrote it.
+
+    ``further``: what the half's own preparation did with the plan's further objects (``website_further_objects``):
+    each it built is said to be built (``BUILT_TOO``), and each it left in the scan as filmed is named with why
+    (``LEFT_IN_SCAN``), never among the objects the plan keeps. Without it the notes are as they were."""
     plan = ((decided or {}).get("build_plan") or {}).get("plan") or {}
     rows = [row for row in plan.get("objects") or [] if isinstance(row, Mapping) and row.get("name")]
+    decided_on, further_notes = _further(rows, further, {str(row.get("target_id"))
+                                                         for row in _kept_rows(budget, decided)})
     if not rows:
-        return []
+        return further_notes
     capped = kept_at_cap(budget, decided)
     by_target = {row.get("target_id"): row for row in rows}
     capped_names = [plain_name(by_target[row.get("target_id")]) if row.get("target_id") in by_target
@@ -140,11 +203,12 @@ def plan_notes(decided: Mapping[str, Any] | None, budget: Mapping[str, Any] | No
     taken = [row for row in rows if row["target_id"] == built.get("target_id")]
     unseen = [row for row in rows if row["target_id"] == NOT_IN_VIDEO]
     kept = ([row for row in rows if row not in taken and row not in unseen and row["role"] in ("moved_object", "other")
-             and row["name"] not in capped]
+             and row["name"] not in capped and row["target_id"] not in decided_on]
             if taken or (decided or {}).get("applied") is True else [])
     notes = ["What this simulation needs, as Blueprint's model read the job: " + _names(rows) + "."]
     if taken:
         notes.append("The plan takes this out of the scan to build as its own object: " + _names(taken) + ".")
+    notes += further_notes
     if kept:
         notes.append("The plan keeps these in the scan as filmed, not built on their own: " + _names(kept) + ".")
     notes.extend(KEPT_AT_CAP_NOTE.format(name=name) for name in capped_names)
@@ -153,14 +217,15 @@ def plan_notes(decided: Mapping[str, Any] | None, budget: Mapping[str, Any] | No
     return notes
 
 
-def build_plan_notes(capture_root: Path) -> dict[str, Any]:
-    """``plan_notes`` of the capture's sealed decision and build budget, for the company package
-    (``website_company_simulation``)."""
-    notes = plan_notes(sealed_decision(capture_root), sealed_budget(capture_root))
+def build_plan_notes(capture_root: Path, further: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """``plan_notes`` of the capture's sealed decision and build budget, and of what the half's own preparation did
+    with the plan's further objects (``further``), for the company package (``website_company_simulation``)."""
+    notes = plan_notes(sealed_decision(capture_root), sealed_budget(capture_root), further)
     return {"plan_notes": notes} if notes else {}
 
 
-__all__ = ["BUDGET_RECORD", "BUDGET_SCHEMA", "DECISION_SCHEMA", "JOB_OBJECT_RECORD", "KEPT_AT_CAP", "KEPT_AT_CAP_NOTE",
-           "NOT_IN_VIDEO", "REFUSAL_CODE_MEANS_ONE_OF", "ROLE_WORDS", "SHAPE_WORDS", "UNNAMED", "budget_root",
-           "build_plan_notes", "kept_at_cap", "kept_disclosure", "plain_name", "plan_notes", "sealed_budget",
+__all__ = ["BUDGET_RECORD", "BUDGET_SCHEMA", "BUILT_TOO", "DECISION_SCHEMA", "JOB_OBJECT_RECORD", "KEPT_AT_CAP",
+           "KEPT_AT_CAP_NOTE", "LEFT_FOR_ANOTHER_REASON", "LEFT_IN_SCAN", "LEFT_WORDS", "NOT_IN_VIDEO", "OVERLAP_WORDS",
+           "REFUSAL_CODE_MEANS_ONE_OF", "ROLE_WORDS", "SHAPE_WORDS", "UNNAMED", "budget_root", "build_plan_notes",
+           "kept_at_cap", "kept_disclosure", "left_words", "plain_name", "plan_names", "plan_notes", "sealed_budget",
            "sealed_decision"]

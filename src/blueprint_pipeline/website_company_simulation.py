@@ -603,7 +603,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
                                   **({"thresholds_assumed": True} if assumed else {}),
                                   **({"member_date": member_date(capture)} if capture is not None else {}),
                                   **({"thresholds_confirmed_later": True} if confirmed else {}),
-                                  **(build_plan_notes(capture) if capture is not None else {}),
+                                  **(build_plan_notes(capture, told.get("further_objects"))
+                                     if capture is not None else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
@@ -784,7 +785,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
                                         "size_disagrees_with_published", "destination_overhang",
                                         "destination_box_meets_room", "member_date", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
-                                        "object_source", "object_shape", "variation_evidence", "mass_basis")
+                                        "object_source", "object_shape", "variation_evidence", "mass_basis",
+                                        "further_objects")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}

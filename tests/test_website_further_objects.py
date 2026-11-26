@@ -566,16 +566,34 @@ def test_a_half_without_the_arm_keeps_both_further_objects(tmp_path, monkeypatch
     assert record["further_objects"]["composed"] == ["job_object_02", "job_object_03"]
 
 
-def _published(tmp_path: Path, further_objects: dict, record: dict | None) -> tuple[dict, Path]:
+def _decision(targets: list[str]) -> dict:
+    """The Atlas job's sealed decision with its build plan: the cup first (the object it takes out of the scan to
+    build), then ``targets``, as their plan rows (``_plan_row``) name them."""
+    from blueprint_pipeline.website_build_plan_notes import DECISION_SCHEMA
+    sourcing = {"cup-1": "generate", "mug-1": "library", "artisan-1": "generate"}
+    rows = [_plan_row(name, sourcing=sourcing.get(name, "parametric"),
+                      shape=None if sourcing.get(name) == "generate" else "carton") for name in ["cup-1", *targets]]
+    decided = {"schema_version": DECISION_SCHEMA, "applied": False, "build_plan": {"plan": {"objects": rows}},
+               "built": {"target_id": "cup-1", "editor_object_ids": ["e-cup-1"]}}
+    decided["digest"] = canonical_digest(decided, digest_field="digest")
+    return decided
+
+
+def _published(tmp_path: Path, further_objects: dict, record: dict | None,
+               decided: dict | None = None) -> tuple[dict, Path]:
     """The company's package of a half compiled with ``further_objects``, read from a capture whose preparation holds
     ``record`` as its ``further_objects`` (as the package reads its notes and credits, ``website_half_preparation``),
-    or no such record; the publication's result and where the package was unpacked."""
+    or no such record, and whose Atlas job sealed ``decided``; the publication's result and where the package was
+    unpacked."""
     import zipfile
 
     from tests.test_website_company_simulation import Job, World, _package
     compiled, _record, _plan = _half(tmp_path, further_objects)
     job = Job(tmp_path / "download")
     job.preparation.write_text(json.dumps({"further_objects": record} if record is not None else {}))
+    if decided is not None:
+        (job.capture / "pipeline" / "atlas").mkdir(parents=True, exist_ok=True)
+        (job.capture / "pipeline" / "atlas" / "job_object_rule.json").write_text(json.dumps(decided))
     status = next((job.queue / "status").glob("*.json"))
     status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": compiled["path"]}))
     result = World(job).publish()
@@ -667,3 +685,89 @@ def test_a_further_part_its_preparation_does_not_account_for_never_leaves(tmp_pa
         assert notes.refusal(source) == notes.FURTHER_UNACCOUNTED
         with pytest.raises(sim.ShapeRefused, match=notes.FURTHER_UNACCOUNTED):
             sim.build_package(source, tmp_path / str(index) / "package.zip", literals=[])
+
+
+# --- S4: what the README says of each further object ----------------------------------------------------------------
+
+def _readme(unpacked: Path) -> str:
+    return " ".join((unpacked / "README.txt").read_text().split())
+
+
+def test_the_readme_names_each_further_object_how_it_was_built_and_each_left_in_the_scan_with_why(tmp_path):
+    """Two further objects composed and one left in the scan: the README names each part the package holds by its
+    prim and how it was built, says its place is the video's estimate, says the rule scores only the job's object, and
+    its plan note says what became of each further object; the library model's geometry ships with its credit."""
+    capture, value = _composed(tmp_path)
+    record = {**value["further_objects"], "left_in_scan": [
+        {"rank": 4, "target_id": "static-1", "reason": "further_object_static_check_failed:no_collider"}]}
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))), record,
+                                  _decision(["carton-1", "mug-1", "static-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    for sentence in (
+            # The plan, and what became of each of its further objects.
+            "What this simulation needs, as Blueprint's model read the job: cup, carton, mug box and crate.",
+            "The plan takes this out of the scan to build as its own object: cup.",
+            "Also built as their own objects, where the video shows them: carton and mug box.",
+            "Left in the scan as filmed, not built on its own: crate, because its file did not pass Blueprint's "
+            "static check.",
+            # The parts the package holds, by their prims, how each was built, and its place an estimate.
+            "The package also holds /World/Object_02 (carton): a plain carton shape Blueprint made for it, sized from "
+            "the video, with none of the real object's detail. It stands where the video shows it; that position is "
+            "an estimate from the video, not a measurement.",
+            "The package also holds /World/Object_03 (mug box): a model of the same kind of object from a public "
+            "library, picked and sized from the video and credited under Library models; it is not the site's own "
+            "object. It stands where the video shows it; that position is an estimate from the video, not a "
+            "measurement.",
+            # The rule scores only the top-ranked object.
+            "success_rule.json scores only the job's object, /World/Object. /World/Object_02 and /World/Object_03 are "
+            "also the job's objects, placed where the video shows them; the rule does not score them."):
+        assert sentence in readme, sentence
+    assert "keeps these in the scan" not in readme and "exactly" not in readme
+    # The plan's words ship only as plain object words; the library model ships with its credit naming its files.
+    credit = readme.split("Library models", 1)[1]
+    assert "- scene/object_03.usda and variations.usda: Test Mug Box by Google" in credit
+    mug = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")
+    assert _uncredited(unpacked, mug["library_design"]) == []
+    # The further objects' record names the package's revision: the same package without it is another revision.
+    from blueprint_pipeline import website_company_simulation as sim
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert source["further_objects"]["left_in_scan"] == [
+        {"rank": 4, "target_id": "static-1", "name": "crate", "reason": "further_object_static_check_failed:no_collider"}]
+    assert sim.simulation_revision(source) != sim.simulation_revision({**source, "further_objects": None})
+
+
+def test_a_further_object_built_but_left_out_of_the_half_is_said_to_be_not_in_the_package(tmp_path):
+    capture, value = _composed(tmp_path)
+    carton = next(row for row in value["further_objects"]["objects"] if row["source"] == "parametric")
+    changed = capture / "pipeline" / "website_scene_preparation" / carton["asset"]["relative_path"]
+    changed.write_bytes(changed.read_bytes() + b"\n")  # changed since it was composed: the half leaves it out
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))),
+                                  value["further_objects"], _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    assert "Built as its own object but not in this package: carton." in readme
+    assert "The package also holds /World/Object_02 (mug box): a model of the same kind of object" in readme
+    assert "/World/Object_03" not in readme
+
+
+def test_the_plan_note_says_what_became_of_each_further_object_and_nothing_without_them():
+    from blueprint_pipeline.website_build_plan_notes import LEFT_FOR_ANOTHER_REASON, left_words, plan_notes
+    decided = _decision(["carton-1", "mug-1", "static-1", "artisan-1"])
+    before = plan_notes(decided)
+    assert before[2] == "The plan keeps these in the scan as filmed, not built on their own: carton, mug box, crate and " \
+                        "an object the job moves."  # the stale note, still true without a further-objects record
+    assert plan_notes(decided, None, {"composed": [], "left_in_scan": []}) == before
+    notes = plan_notes(decided, None, {"composed": [{"target_id": "mug-1"}], "left_in_scan": [
+        {"target_id": "artisan-1", "reason": "further_object_needs_artisan:website_extra_object_no_free_source"},
+        {"target_id": "static-1", "reason": "further_object_overlaps:scored_object_destination"}]})
+    assert notes[2:] == [
+        "Also built as its own object, where the video shows it: mug box.",
+        "Left in the scan as filmed, not built on its own: an object the job moves, because it needs a model "
+        "Blueprint would generate, and none was made for it.",
+        "Left in the scan as filmed, not built on its own: crate, because where the video shows it, it would overlap "
+        "where the job's object goes.",
+        "The plan keeps these in the scan as filmed, not built on their own: carton."]
+    # A reason it has no words for is never guessed at.
+    assert left_words("further_object_something_new:x") == left_words("further_object_overlaps:elsewhere") \
+        == LEFT_FOR_ANOTHER_REASON

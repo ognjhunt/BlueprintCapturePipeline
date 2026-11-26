@@ -4,6 +4,13 @@ Kept apart from ``website_company_simulation``, which builds the package and cal
 wording itself stays there, where every other module and test reads it; this module only puts it together, in the
 order the README has always had. It imports that module; that module imports this one only when it writes a README.
 Reads only: never decides, never fetches, never buys.
+
+The words for the further objects of a several-object job (``website_further_objects``) are new and live here
+(``further_notes``): each one the package holds as its own part, by its prim, with how it was built and that it stands
+where the video shows it, an estimate; and each its preparation built that this package does not hold. What the
+preparation did with each of the plan's further objects, built or left in the scan and why, is the plan's note
+(``website_build_plan_notes.plan_notes``); that the rule scores only the job's object is the object's note
+(``website_half_preparation.object_note``). A package without further objects says none of it.
 """
 from __future__ import annotations
 
@@ -27,6 +34,45 @@ from .website_company_simulation import (
     SIZE_FROM_ITS_POINTS_NOTE, SPENDING_CAP_REACHED, SUPPORT_NOT_HELD, SUPPORT_REGION_NOT_HELD, SURFACE_ESTIMATED_NOTE,
     SURFACE_ESTIMATED_NO_LOOK_NOTE, SURFACE_ESTIMATED_ROOM_NO_LOOK_NOTE, SURFACE_ESTIMATED_ROOM_NOTE)
 from .website_half_preparation import COLLISION_ONLY, THRESHOLDS_ASSUMED, THRESHOLDS_CONFIRMED_LATER
+
+#: A further object the package holds as its own part, by its final prim, in plain object words, and how it was built
+#: (``FURTHER_HOW``, by its ``source``). Its pose is the video's, estimated: never said to be placed exactly.
+FURTHER_HELD = ("The package also holds /World/{prim} ({name}): {how}. It stands where the video shows it; that "
+                "position is an estimate from the video, not a measurement.")
+FURTHER_HOW = {"library": ("a model of the same kind of object from a public library, picked and sized from the video "
+                           "and credited under Library models; it is not the site's own object"),
+               "parametric": ("a plain {shape} shape Blueprint made for it, sized from the video, with none of the "
+                              "real object's detail")}
+#: A further object its preparation built that this package does not hold: the half left it out (its file changed
+#: since, or the scene could not take it). Nothing is said of where else it is.
+FURTHER_NOT_HELD = "Built as {its} own object{s} but not in this package: {names}."
+
+
+def _joined(names: Sequence[str]) -> str:
+    return ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+
+
+def further_notes(source: Mapping[str, Any]) -> list[str]:
+    """The README's notes on the further objects of the job its half's preparation built (``further_objects``, read by
+    ``website_half_preparation``): one for each part the package holds (matched by its identity, at its final prim,
+    in scene.usda's order), then one naming those it does not hold. None without any."""
+    rows = [row for row in (source.get("further_objects") or {}).get("composed") or [] if isinstance(row, Mapping)]
+    if not rows:
+        return []
+    notes, held = [], []
+    for prim, shipped_as in library_notes.further_prims(source).items():
+        row = next((row for row in rows if library_notes.matches(row, shipped_as)), None)
+        if row is None or row.get("source") not in FURTHER_HOW:
+            continue  # a part no record accounts for never ships (``website_library_notes.refusal``)
+        held.append(row)
+        how = FURTHER_HOW[str(row["source"])].format(shape=row.get("shape") or "simple")
+        notes.append(FURTHER_HELD.format(prim=prim, name=row.get("name"), how=how))
+    missing = [str(row.get("name")) for row in rows if not any(row is kept for kept in held)]
+    if missing:
+        one = len(missing) == 1
+        notes.append(FURTHER_NOT_HELD.format(its="its" if one else "their", s="" if one else "s",
+                                             names=_joined(missing)))
+    return notes
 
 _SAYS = {"scene_appearance": "the look file, which shows how the site looks",
          "scene_collision": "the site's surfaces for contact",
@@ -171,7 +217,7 @@ def readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
                if room is not None else []), *([NO_RULE] if withheld else []),
-             *half_preparation.object_note(source),
+             *half_preparation.object_note(source), *further_notes(source),  # and the job's further objects
              *half_preparation.estimates_note(source),  # where the mass range comes from; friction's default
              *(([THRESHOLDS_CONFIRMED_LATER] if source.get("thresholds_confirmed_later") else [THRESHOLDS_ASSUMED])
                if source.get("thresholds_assumed") and source.get("rule") and room is None else [])]
@@ -186,4 +232,4 @@ def readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str
     return "\n".join(lines)
 
 
-__all__ = ["readme"]
+__all__ = ["FURTHER_HELD", "FURTHER_HOW", "FURTHER_NOT_HELD", "further_notes", "readme"]

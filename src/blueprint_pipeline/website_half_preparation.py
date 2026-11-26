@@ -288,6 +288,34 @@ def object_note(source: Mapping[str, Any]) -> list[str]:
     return found
 
 
+def further_objects(preparation: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """What the half's own preparation did with each further object of the job (its ``further_objects`` record,
+    ``website_further_objects``), for the README and the plan's note (``website_build_plan_notes``): ``composed``, each
+    by its identity (``website_library_notes``), with how it was built (``source``; its shape, in plain words, for a
+    parametric one), and ``left_in_scan``, each with its reason code. Each is named by the job's sealed build plan in
+    plain object words only, never the site's. Empty without any, so a one-object package is as before."""
+    record = preparation.get("further_objects")
+    if not isinstance(record, Mapping) or not (record.get("objects") or record.get("left_in_scan")):
+        return {}
+    from .website_build_plan_notes import UNNAMED, plan_names, sealed_decision
+    names = plan_names(sealed_decision(capture_root))
+
+    def named(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {"rank": row.get("rank"), "target_id": str(row.get("target_id")),
+                "name": names.get(str(row.get("target_id")), UNNAMED)}
+    composed = []
+    for row in record.get("objects") or []:
+        if not isinstance(row, Mapping):
+            continue
+        design = row.get("parametric_design") if isinstance(row.get("parametric_design"), Mapping) else {}
+        composed.append({**named(row), **library_notes.identity(row), "source": row.get("source"),
+                         **({"shape": SHAPE_WORDS.get(str(design.get("shape")), "simple")}
+                            if row.get("source") == "parametric" else {})})
+    left = [{**named(row), "reason": str(row.get("reason"))} for row in record.get("left_in_scan") or []
+            if isinstance(row, Mapping)]
+    return {"further_objects": {"composed": composed, "left_in_scan": left}}
+
+
 def handoff_base_scene(capture_root: Path) -> dict[str, Any]:
     """The base scene the job's sealed scene handoff names (inside the capture), else empty."""
     root = Path(capture_root)
@@ -347,6 +375,7 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
             # The job's object's library model, and each further object's (``website_further_objects``).
             **library_notes.merged(library_notes.credit(configuration, root),
                                    library_notes.further_credits(preparation, root)),
+            **further_objects(preparation, root),  # what became of each further object, for the README
             **object_variations.evidence(preparation, root),
             **mass_basis(preparation),
             "estimates": object_estimates(preparation),
@@ -432,7 +461,7 @@ def surface_estimated(capture_root: Path) -> bool:
 
 __all__ = ["COLLISION_ONLY", "DESIGNED_NOTE", "FIELD", "GENERATED_NOTE", "LIBRARY_NOTE", "LOOK_AND_COLLISION",
            "PARAMETRIC_NOTE", "SITE_CONFIRMED", "STAGED_NAME", "THRESHOLDS_ASSUMED", "THRESHOLDS_CONFIRMED_LATER",
-           "base_scene_notes", "binding", "generated_patch", "half_disclosures",
+           "base_scene_notes", "binding", "further_objects", "generated_patch", "half_disclosures",
            "half_preparation", "handoff_base_scene", "look_views", "named_path", "number_paths", "object_estimates",
            "object_note", "object_source", "preparation", "size_notes", "success_basis", "surface_estimated",
            "thresholds_assumed", "thresholds_confirmed_later", "with_assumed_basis"]

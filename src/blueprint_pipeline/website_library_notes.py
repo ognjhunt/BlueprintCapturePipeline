@@ -141,7 +141,7 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
 FURTHER_UNACCOUNTED = "website_company_simulation_further_object_unaccounted"
 
 
-def _identity(row: Mapping[str, Any]) -> dict[str, Any]:
+def identity(row: Mapping[str, Any]) -> dict[str, Any]:
     """A further object's stable identity, as its preparation recorded it (``website_further_objects``): its rank,
     its replacement id, the runtime asset id its scene half's row carries, and the digest of the file it ships as. Never
     its prim: a half that leaves an earlier further object out renumbers the ones after it."""
@@ -164,14 +164,14 @@ def further_credits(preparation: Mapping[str, Any], capture_root: Path) -> dict[
     for row in (record.get("objects") or []) if isinstance(record, Mapping) else []:
         if not isinstance(row, Mapping):
             continue
-        identity = _identity(row)
-        parts.append({**identity, "source": row.get("source")})
+        found_identity = identity(row)
+        parts.append({**found_identity, "source": row.get("source")})
         if row.get("source") != "library":
             continue
         found = credit({"library_design": row.get("library_design")}, capture_root)
         if "library_refusal" in found:
             return {"library_refusal": found["library_refusal"]}
-        rows += [{**item, "file": None, "path": None, "sha256": None, "further_object": identity}
+        rows += [{**item, "file": None, "path": None, "sha256": None, "further_object": found_identity}
                  for item in found["library_models"]]
     return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {})}
 
@@ -202,7 +202,7 @@ def further_prims(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
             if placed["role"] == FURTHER_ROLE and placed["prim"] in files}
 
 
-def _matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool:
+def matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool:
     """Whether a part shipped as ``shipped_as`` is the further object ``identity`` names: the same runtime asset id and
     the same file bytes, both, never its prim."""
     return (bool(identity.get("runtime_asset_id")) and identity.get("runtime_asset_id") == shipped_as["runtime_asset_id"]
@@ -223,7 +223,7 @@ def refusal(source: Mapping[str, Any]) -> str | None:
         return str(source["library_refusal"])
     parts = [row for row in source.get("further_parts") or [] if isinstance(row, Mapping)]
     for shipped_as in further_prims(source).values():
-        if not any(_matches(row, shipped_as) for row in parts):
+        if not any(matches(row, shipped_as) for row in parts):
             return FURTHER_UNACCOUNTED
     return None
 
@@ -361,7 +361,7 @@ def credited(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]
                 kept.append(row)
                 continue
             matched = sorted(prim for prim, shipped_as in prims.items()
-                             if prim in placed and _matches(row["further_object"], shipped_as))
+                             if prim in placed and matches(row["further_object"], shipped_as))
             if matched:
                 kept.append({**row, "part": matched[0], "credited_files": _part_files(row, Path(staging), placed,
                                                                                        matched)})
@@ -386,5 +386,5 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
 __all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
            "VARIATIONS_FILE",
            "changes", "credit", "credited",
-           "FURTHER_UNACCOUNTED", "credit_text", "credited_files", "further_credits", "further_prims", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
-           "topology_digest"]
+           "FURTHER_UNACCOUNTED", "credit_text", "credited_files", "further_credits", "further_prims", "identity",
+           "matches", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped", "topology_digest"]
