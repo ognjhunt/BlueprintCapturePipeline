@@ -243,6 +243,25 @@ def test_the_same_inputs_give_the_same_samples_and_bytes_and_another_object_othe
                for sample in after["samples"] for key, value in sample["values"].items())
 
 
+def test_one_package_revision_always_holds_the_same_samples(tmp_path):
+    """A review of PR #3752: the samples were seeded with the plan's digest, which the package revision leaves out
+    unless the source is refused, so a plan change alone could draw new samples under the same revision. The seed is
+    now only what the revision covers: the part, its file and its evidence."""
+    job = _job(tmp_path / "job")
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source.get("plan_digest") and not source.get("refusal")
+    other = {**source, "plan_digest": "sha256:" + "e" * 64}
+    assert sim.simulation_revision(other) == sim.simulation_revision(source)
+    built = [sim.build_package(value, tmp_path / name, literals=sim.secret_literals(job.capture, value))
+             for value, name in ((source, "a.zip"), (other, "b.zip"))]
+    layers = []
+    for name in ("a.zip", "b.zip"):
+        with zipfile.ZipFile(tmp_path / name) as archive:
+            layers.append((archive.read(variations.LAYER_FILE), archive.read(variations.SIDECAR_FILE)))
+    assert layers[0] == layers[1]
+    assert built[0]["digest"] == built[1]["digest"]
+
+
 # --- every range rests on its evidence ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("changes", "plan", "expected"), [
