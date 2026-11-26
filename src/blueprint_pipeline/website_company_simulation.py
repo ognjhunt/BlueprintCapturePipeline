@@ -594,6 +594,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
         plan = _read(plan_path)
         if not plan:
             continue
+        plan = library_notes.without_withheld(plan, told)  # a further object whose model cannot be credited: not placed
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
                                   "refusal": None, **notes, **({"generated_patch": generated} if generated else {}),
@@ -786,7 +787,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
                                         "destination_box_meets_room", "member_date", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
                                         "object_source", "object_shape", "variation_evidence", "mass_basis",
-                                        "further_objects")
+                                        "further_objects", "further_withheld")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1560,7 +1561,9 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         known_over = _size_over(manifest, revision)
     base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
             "source": {"plan_digest": source.get("plan_digest"),
-                       "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
+                       "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())},
+                       # Flagged: a further object left out for its library model's rights (never its geometry).
+                       **({"further_withheld": source["further_withheld"]} if source.get("further_withheld") else {})},
             "upload_sha256": upload, "permission": basis, "built_at_epoch": int(now()), "archive": None,
             "delivered": None, "source_kind": source["source_kind"], "size_rule": SIZE_RULE,
             # Outside the revision: why a floor ships, and the refused half it stands for (never rebuilt as it is).

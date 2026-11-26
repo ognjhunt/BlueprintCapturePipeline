@@ -46,6 +46,12 @@ FURTHER_HOW = {"library": ("a model of the same kind of object from a public lib
 #: A further object its preparation built that this package does not hold: the half left it out (its file changed
 #: since, or the scene could not take it). Nothing is said of where else it is.
 FURTHER_NOT_HELD = "Built as {its} own object{s} but not in this package: {names}."
+#: A further object built from a library model that cannot be credited now (``website_library_notes.further_credits``):
+#: its geometry is left out, and the package goes on without it. Why, by the credit's own refusal code.
+FURTHER_WITHHELD = "Not in this package: {name}. It was built from a library model {why}, so its geometry is left out."
+WITHHELD_WHY = {library_notes.CREDIT_UNREADABLE: "whose credit could not be read",
+                library_notes.LICENSE_REFUSED: "whose license Blueprint can no longer confirm"}
+WITHHELD_OTHERWISE = "whose rights Blueprint could not confirm"
 
 
 def _joined(names: Sequence[str]) -> str:
@@ -55,24 +61,33 @@ def _joined(names: Sequence[str]) -> str:
 def further_notes(source: Mapping[str, Any]) -> list[str]:
     """The README's notes on the further objects of the job its half's preparation built (``further_objects``, read by
     ``website_half_preparation``): one for each part the package holds (matched by its identity, at its final prim,
-    in scene.usda's order), then one naming those it does not hold. None without any."""
+    in scene.usda's order), one for each withheld for its library model's rights (``further_withheld``), then one
+    naming the others it does not hold. None without any."""
     rows = [row for row in (source.get("further_objects") or {}).get("composed") or [] if isinstance(row, Mapping)]
     if not rows:
         return []
-    notes, held = [], []
+    withheld = [row for row in source.get("further_withheld") or [] if isinstance(row, Mapping)]
+    notes, said = [], []
     for prim, shipped_as in library_notes.further_prims(source).items():
         row = next((row for row in rows if library_notes.matches(row, shipped_as)), None)
         if row is None or row.get("source") not in FURTHER_HOW:
             continue  # a part no record accounts for never ships (``website_library_notes.refusal``)
-        held.append(row)
+        said.append(row)
         how = FURTHER_HOW[str(row["source"])].format(shape=row.get("shape") or "simple")
         notes.append(FURTHER_HELD.format(prim=prim, name=row.get("name"), how=how))
-    missing = [str(row.get("name")) for row in rows if not any(row is kept for kept in held)]
+    for refused in withheld:
+        row = next((row for row in rows if library_notes.matches(refused, row)), None)
+        if row is not None:
+            said.append(row)
+            notes.append(FURTHER_WITHHELD.format(name=row.get("name"), why=WITHHELD_WHY.get(
+                str(refused.get("reason")), WITHHELD_OTHERWISE)))
+    missing = [str(row.get("name")) for row in rows if not any(row is kept for kept in said)]
     if missing:
         one = len(missing) == 1
         notes.append(FURTHER_NOT_HELD.format(its="its" if one else "their", s="" if one else "s",
                                              names=_joined(missing)))
     return notes
+
 
 _SAYS = {"scene_appearance": "the look file, which shows how the site looks",
          "scene_collision": "the site's surfaces for contact",
@@ -232,4 +247,5 @@ def readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str
     return "\n".join(lines)
 
 
-__all__ = ["FURTHER_HELD", "FURTHER_HOW", "FURTHER_NOT_HELD", "further_notes", "readme"]
+__all__ = ["FURTHER_HELD", "FURTHER_HOW", "FURTHER_NOT_HELD", "FURTHER_WITHHELD", "WITHHELD_OTHERWISE", "WITHHELD_WHY",
+           "further_notes", "readme"]

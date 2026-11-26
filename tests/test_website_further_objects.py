@@ -1,5 +1,7 @@
-"""Several objects per job, stage 3: each free further object authored on the CPU, placed where it was filmed and
-carried into the composed scene and the company's package as ``/World/Object_02`` onward, beside the scored object.
+"""Several objects per job, stages 3 and 4: each free further object authored on the CPU, placed where it was filmed
+(seated on its support by its own file's lowest point) and carried into the composed scene and the company's package
+as ``/World/Object_02`` onward, beside the scored object; what the package's README and plan note say of each; and a
+further object whose library model cannot be credited left out alone.
 
 The fixture is ``tests.test_website_task_preparation``'s captured cup on its table, filmed with more objects beside it
 (raised patches in the frames, absent from the collider, as objects taken out before reconstruction are). One-object
@@ -9,6 +11,10 @@ Offline: no provider, no network, nothing paid.
 # Covers: src/blueprint_pipeline/website_further_objects.py
 # Covers: src/blueprint_pipeline/website_preparation_request.py
 # Covers: src/blueprint_pipeline/website_task_preparation.py
+# Covers: src/blueprint_pipeline/website_company_readme.py
+# Covers: src/blueprint_pipeline/website_build_plan_notes.py
+# Covers: src/blueprint_pipeline/website_library_notes.py
+# Covers: src/blueprint_pipeline/website_half_preparation.py
 from __future__ import annotations
 
 import hashlib
@@ -109,15 +115,17 @@ def _plan_row(target: str, *, sourcing: str = "parametric", shape: str | None = 
             "reason": f"The job moves the {LABELS[target]}.", "editor_object_ids": ["e-" + target]}
 
 
-def _seal_pick(library_root: Path, row: dict, context: dict, size=(0.16, 0.034, 0.22)) -> dict:
-    """The mug box's library pick as the library step seals one: a box model, its credit and its fetched file."""
+def _seal_pick(library_root: Path, row: dict, context: dict, size=(0.16, 0.034, 0.22), *, credit: dict = CREDIT,
+               model: bytes | None = None) -> dict:
+    """The mug box's library pick as the library step seals one: a box model (or ``model``), its credit and its
+    fetched file."""
     from blueprint_pipeline.website_extra_objects import object_root
     root = object_root(library_root, row["target_id"])
     (root / "files").mkdir(parents=True, exist_ok=True)
     mesh = root / "files" / "model.obj"
-    mesh.write_bytes(_box_obj(*size))
+    mesh.write_bytes(_box_obj(*size) if model is None else model)
     subject = {"schema_version": library.SUBJECT_SCHEMA, "target_id": row["target_id"], "route": "extra",
-               "reading_digest": library.reading_digest(row, context), "attribution": dict(CREDIT),
+               "reading_digest": library.reading_digest(row, context), "attribution": dict(credit),
                "files": [{"role": "mesh", "path": str(mesh), "sha256": hashlib.sha256(mesh.read_bytes()).hexdigest(),
                           "size_bytes": mesh.stat().st_size, "suffix": ".obj"}],
                "pick": {"source": "model", "reason": "The same kind of object."}}
@@ -132,8 +140,10 @@ def _catalog(monkeypatch):
     monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"}])
 
 
-def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22)) -> list[dict]:
-    """``further_inputs`` from a sealed build plan: the cup first (the scored object), then ``rows``."""
+def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22),
+            picks: dict | None = None) -> list[dict]:
+    """``further_inputs`` from a sealed build plan: the cup first (the scored object), then ``rows``; the mug box's
+    library pick sealed, and each of ``picks`` (a target's credit and model file)."""
     context, entries = arguments["task_context"], arguments["removal_manifest"]["entries"]
     editor = [{"target_id": "e-" + row["target_id"], "label": row["semantic_label"], "disposition": "remove"}
               for row in entries]
@@ -145,6 +155,9 @@ def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22)) -> l
     for row in plan["objects"]:
         if row["target_id"] == "mug-1":
             _seal_pick(library_root, row, context, size)
+        elif row["target_id"] in (picks or {}):
+            credit, model = picks[row["target_id"]]
+            _seal_pick(library_root, row, context, credit=credit, model=model)
     return further.further_inputs(plan, entries=entries, editor_objects=editor, task_context=context,
                                   library_root=library_root)
 
@@ -771,3 +784,114 @@ def test_the_plan_note_says_what_became_of_each_further_object_and_nothing_witho
     # A reason it has no words for is never guessed at.
     assert left_words("further_object_something_new:x") == left_words("further_object_overlaps:elsewhere") \
         == LEFT_FOR_ANOTHER_REASON
+
+
+# --- S4: a further object whose library model cannot be credited is left out alone ---------------------------------
+
+CARTON_ID = "gso:Test_Carton_Box@1"
+CARTON_CREDIT = {**CREDIT, "entry_id": CARTON_ID, "title": "Test Carton Box",
+                 "item_url": "https://fuel.gazebosim.org/1.0/GoogleResearch/models/Test_Carton_Box/1/Test_Carton_Box.zip"}
+
+
+def _fanned_box_obj(x: float, y: float, z: float) -> bytes:
+    """A box whose top is four triangles about its middle: another mesh (another topology) than ``_box_obj``'s."""
+    corners = [(sx * x / 2, sy * y / 2, sz * z) for sz in (0, 1) for sy in (-1, 1) for sx in (-1, 1)]
+    faces = [(1, 3, 4, 2), (1, 2, 6, 5), (3, 7, 8, 4), (1, 5, 7, 3), (2, 4, 8, 6),
+             (5, 6, 9), (6, 8, 9), (8, 7, 9), (7, 5, 9)]
+    return ("\n".join([*(f"v {a:.6f} {b:.6f} {c:.6f}" for a, b, c in [*corners, (0.0, 0.0, z)]),
+                       *("f " + " ".join(str(i) for i in face) for face in faces)]) + "\n").encode()
+
+
+def _two_library_models(tmp_path: Path, monkeypatch) -> tuple[Path, dict]:
+    """A capture whose preparation composed the carton and the mug box, each from its own library model."""
+    monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"},
+                                                                      {"id": CARTON_ID, "license": "CC-BY-4.0"}])
+    capture = tmp_path / "capture"
+    arguments = _job(tmp_path / "job", ["carton-1", "mug-1"])
+    arguments["output_root"] = capture / "pipeline" / "website_scene_preparation"
+    value = preparation.compile_website_scene_preparation(**arguments, further_objects=_inputs(
+        arguments, [_plan_row("carton-1"), _plan_row("mug-1")],
+        picks={"carton-1": (CARTON_CREDIT, _fanned_box_obj(0.16, 0.034, 0.22))}))
+    assert [(row["prim_path"], row["source"], row["library_design"]["entry_id"])
+            for row in value["further_objects"]["objects"]] == [("/World/Object_02", "library", CARTON_ID),
+                                                                ("/World/Object_03", "library", ENTRY_ID)]
+    return capture, value
+
+
+def _holding(unpacked: Path, design: dict) -> list[str]:
+    """Every shipped USD file with a mesh of the model's own topology, read independently of the package's credit."""
+    from blueprint_pipeline.website_library_notes import mesh_topologies
+    topology = (int(design["model_topology"][0]), str(design["model_topology"][1]))
+    return sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")
+                  if path.suffix in (".usd", ".usda", ".usdc", ".usdz") and topology in mesh_topologies(path))
+
+
+def test_a_further_objects_refused_credit_leaves_out_that_object_alone_and_the_rest_ship_credited(tmp_path, monkeypatch):
+    """Rights: the carton's library model is no longer allowed by the deployed catalog. Before, the whole package went
+    to the room floor; now only the carton is left out (its geometry never ships), said in the README and on the
+    package's record, and the job's object and the mug box, credited, ship."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_library_notes as notes
+    capture, value = _two_library_models(tmp_path, monkeypatch)
+    monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"}])
+    found = _in_room(further.for_revision(capture, _revision(capture)))
+    result, unpacked = _published(tmp_path, found, value["further_objects"], _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    carton, mug = value["further_objects"]["objects"]
+    # Only the carton is left out: the mug box takes the first further prim, and the rule names only it.
+    assert (unpacked / "scene" / "object_02.usda").is_file() and not (unpacked / "scene" / "object_03.usda").exists()
+    rule = json.loads((unpacked / "success_rule.json").read_text())
+    assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02"]
+    readme = _readme(unpacked)
+    assert ("Not in this package: carton. It was built from a library model whose license Blueprint can no longer "
+            "confirm, so its geometry is left out.") in readme
+    assert "The package also holds /World/Object_02 (mug box): a model of the same kind of object" in readme
+    credit = readme.split("Library models", 1)[1]
+    assert "- scene/object_02.usda and variations.usda: Test Mug Box by Google" in credit
+    assert "Test Carton Box" not in readme
+    # Independently of the package's own credit: the mug box's geometry ships named in its credit, the carton's not at
+    # all.
+    assert _uncredited(unpacked, mug["library_design"]) == []
+    assert _holding(unpacked, carton["library_design"]) == []
+    # Flagged on the package's record, by the carton's identity and the credit's own refusal.
+    manifest = json.loads((result["job"].capture / "pipeline" / "company_simulation" / "company_simulation.json")
+                          .read_text())
+    (withheld,) = manifest["source"]["further_withheld"]
+    assert (withheld["target_id"], withheld["reason"], withheld["runtime_asset_id"]) == (
+        "carton-1", notes.LICENSE_REFUSED, carton["runtime_asset_id"])
+    # Library geometry still never ships without its credit: were the carton's part placed all the same, the package
+    # would not leave with it.
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert notes.refusal(source) is None
+    monkeypatch.setattr(notes, "without_withheld", lambda plan, _source: plan)
+    unfiltered = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert len(notes.further_prims(unfiltered)) == 2
+    assert notes.refusal(unfiltered) == notes.LICENSE_REFUSED
+    with pytest.raises(sim.ShapeRefused, match=notes.LICENSE_REFUSED):
+        sim.build_package(unfiltered, tmp_path / "unfiltered.zip", literals=[])
+
+
+def test_a_further_objects_unreadable_credit_leaves_out_that_object_alone(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_library_notes as notes
+    capture, value = _two_library_models(tmp_path, monkeypatch)
+    record = json.loads(json.dumps(value["further_objects"]))
+    del record["objects"][1]["library_design"]["attribution"]["author"]  # the mug box's credit cannot be read
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))), record,
+                                  _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    assert ("Not in this package: mug box. It was built from a library model whose credit could not be read, so its "
+            "geometry is left out.") in readme
+    assert "- scene/object_02.usda and variations.usda: Test Carton Box by Google" in readme
+    assert _holding(unpacked, value["further_objects"]["objects"][1]["library_design"]) == []
+    assert notes.further_credits({"further_objects": record}, capture)["further_withheld"][0]["reason"] == \
+        notes.CREDIT_UNREADABLE
+
+
+def test_the_job_objects_own_refused_credit_still_ships_the_room_floor(tmp_path):
+    """The scored object's credit is as before: when it cannot be read, the package may not leave with the object."""
+    from blueprint_pipeline import website_library_notes as notes
+    refused = notes.merged({"library_refusal": notes.CREDIT_UNREADABLE},
+                           {"further_withheld": [{"runtime_asset_id": "x", "asset_sha256": "y", "reason": "z"}]})
+    assert refused == {"library_refusal": notes.CREDIT_UNREADABLE}
+    assert notes.refusal({"files": {"Object": {"role": "task_object"}}, **refused}) == notes.CREDIT_UNREADABLE
