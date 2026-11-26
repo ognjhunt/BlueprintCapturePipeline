@@ -22,7 +22,10 @@ preparation cannot be read at all, the package may not leave with the object (``
 ships without its credit, and the room floor ships instead. So too when the deployed catalog no longer allows the
 model under the license it was built under (``LICENSE_REFUSED``: a newer index, a dataset refused since), whatever
 the preparation recorded: rights are read as they stand when the package is built
-(``website_library_catalog.rights_now``), never as they stood when the job chose the model.
+(``website_library_catalog.rights_now``), never as they stood when the job chose the model. A further object of the
+job (``website_further_objects``) whose model cannot be credited now, for either reason, is left out alone
+(``further_credits``, ``without_withheld``): its geometry never ships, the README names it, and the package goes on with
+the job's object and every other further object.
 """
 from __future__ import annotations
 
@@ -141,7 +144,7 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
 FURTHER_UNACCOUNTED = "website_company_simulation_further_object_unaccounted"
 
 
-def _identity(row: Mapping[str, Any]) -> dict[str, Any]:
+def identity(row: Mapping[str, Any]) -> dict[str, Any]:
     """A further object's stable identity, as its preparation recorded it (``website_further_objects``): its rank,
     its replacement id, the runtime asset id its scene half's row carries, and the digest of the file it ships as. Never
     its prim: a half that leaves an earlier further object out renumbers the ones after it."""
@@ -154,37 +157,64 @@ def further_credits(preparation: Mapping[str, Any], capture_root: Path) -> dict[
     """Each further object of the job the preparation composed (its ``further_objects``, ``website_further_objects``),
     by its stable identity (``further_parts``: what the package may place), and the credit of each library model one
     was authored from, as ``credit`` reads one, marked with that identity (``further_object``):
-    ``{"library_models": rows, "further_parts": identities}``, ``{"library_refusal": code}`` when a model cannot be
-    credited (its geometry never ships without its credit), empty without any. A credit is matched to the part that
+    ``{"library_models": rows, "further_parts": identities}``, empty without any. A credit is matched to the part that
     ships by that identity, at its final prim (``credited``). Its model's own file is not shipped apart: its credit names
-    the shipped files that hold its geometry."""
+    the shipped files that hold its geometry.
+
+    A further object whose model cannot be credited now (its credit unreadable, ``CREDIT_UNREADABLE``, or its license
+    no longer allowed, ``LICENSE_REFUSED``) is withheld (``further_withheld``, by its identity, with that code): it is
+    not among the parts the package may place, so its geometry never ships (``without_withheld``, ``refusal``), and the
+    package goes on with the job's object and every other further object. Only the job's own object's credit refuses
+    the package (``credit``: its room floor ships instead)."""
     record = preparation.get("further_objects") if isinstance(preparation, Mapping) else None
     rows: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
+    withheld: list[dict[str, Any]] = []
     for row in (record.get("objects") or []) if isinstance(record, Mapping) else []:
         if not isinstance(row, Mapping):
             continue
-        identity = _identity(row)
-        parts.append({**identity, "source": row.get("source")})
-        if row.get("source") != "library":
-            continue
-        found = credit({"library_design": row.get("library_design")}, capture_root)
+        found_identity = identity(row)
+        found = credit({"library_design": row.get("library_design")}, capture_root) \
+            if row.get("source") == "library" else {}
         if "library_refusal" in found:
-            return {"library_refusal": found["library_refusal"]}
-        rows += [{**item, "file": None, "path": None, "sha256": None, "further_object": identity}
-                 for item in found["library_models"]]
-    return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {})}
+            withheld.append({**found_identity, "target_id": str(row.get("target_id")),
+                             "reason": str(found["library_refusal"])})
+            continue
+        parts.append({**found_identity, "source": row.get("source")})
+        rows += [{**item, "file": None, "path": None, "sha256": None, "further_object": found_identity}
+                 for item in found.get("library_models") or []]
+    return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {}),
+            **({"further_withheld": withheld} if withheld else {})}
 
 
 def merged(*credits: Mapping[str, Any]) -> dict[str, Any]:
-    """Several ``credit`` results as one: a refusal when any refuses, else every model in order and every further part
-    accounted for; empty without any."""
+    """Several ``credit`` results as one: a refusal when any refuses, else every model in order, every further part
+    accounted for and every one withheld; empty without any."""
     refused = next((item["library_refusal"] for item in credits if item.get("library_refusal")), None)
     if refused:
         return {"library_refusal": refused}
-    rows = [row for item in credits for row in item.get("library_models") or []]
-    parts = [row for item in credits for row in item.get("further_parts") or []]
-    return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {})}
+    found = {key: [row for item in credits for row in item.get(key) or []]
+             for key in ("library_models", "further_parts", "further_withheld")}
+    return {key: rows for key, rows in found.items() if rows}
+
+
+def _shipped_as(raw: Mapping[str, Any], sha256: Any) -> dict[str, str]:
+    return {"runtime_asset_id": str(raw.get("asset_id") or ""), "asset_sha256": str(sha256 or "")}
+
+
+def without_withheld(plan: Mapping[str, Any], source: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The half's plan without the part of each further object withheld for its library model's rights
+    (``further_withheld``, matched by its identity: its row's runtime asset id and file digest, never its prim), so the
+    package never places it, its rule does not name it and the parts after it take the prims before; the plan as it
+    is without any."""
+    from .scene_package_stage import FURTHER_ROLE
+    withheld = [row for row in source.get("further_withheld") or [] if isinstance(row, Mapping)]
+    rows = plan.get("objects")
+    if not withheld or not isinstance(rows, list):
+        return plan
+    return {**plan, "objects": [raw for raw in rows if not (
+        isinstance(raw, Mapping) and raw.get("semantic_role") == FURTHER_ROLE
+        and any(matches(row, _shipped_as(raw, raw.get("sha256"))) for row in withheld))]}
 
 
 def further_prims(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
@@ -196,13 +226,12 @@ def further_prims(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
         rows = placements(plan)
     except StageRefused:
         return {}
-    return {placed["prim"]: {"runtime_asset_id": str(raw.get("asset_id") or ""),
-                             "asset_sha256": str(files[placed["prim"]].get("sha256") or "")}
+    return {placed["prim"]: _shipped_as(raw, files[placed["prim"]].get("sha256"))
             for placed, raw in zip(rows, plan.get("objects") or [])
             if placed["role"] == FURTHER_ROLE and placed["prim"] in files}
 
 
-def _matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool:
+def matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool:
     """Whether a part shipped as ``shipped_as`` is the further object ``identity`` names: the same runtime asset id and
     the same file bytes, both, never its prim."""
     return (bool(identity.get("runtime_asset_id")) and identity.get("runtime_asset_id") == shipped_as["runtime_asset_id"]
@@ -211,10 +240,11 @@ def _matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool
 
 def refusal(source: Mapping[str, Any]) -> str | None:
     """Why the package may not leave with the job's object in it: the object was built from a library model whose
-    credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``); or a further
-    object's part ships that its preparation does not account for by its identity (``FURTHER_UNACCOUNTED``), so
-    whether it holds a library model, and whose, cannot be told. A package without the object (the room floor) is not
-    refused: ``website_company_simulation`` ships it instead."""
+    credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``); a further object
+    withheld for its model's rights would ship all the same (its own code: ``without_withheld`` takes it out first, so
+    never); or a further object's part ships that its preparation does not account for by its identity
+    (``FURTHER_UNACCOUNTED``), so whether it holds a library model, and whose, cannot be told. A package without the
+    object (the room floor) is not refused: ``website_company_simulation`` ships it instead."""
     files = source.get("files") or {}
     with_object = any(isinstance(row, Mapping) and row.get("role") == "task_object" for row in files.values())
     if not with_object:
@@ -222,8 +252,12 @@ def refusal(source: Mapping[str, Any]) -> str | None:
     if source.get("library_refusal"):
         return str(source["library_refusal"])
     parts = [row for row in source.get("further_parts") or [] if isinstance(row, Mapping)]
+    withheld = [row for row in source.get("further_withheld") or [] if isinstance(row, Mapping)]
     for shipped_as in further_prims(source).values():
-        if not any(_matches(row, shipped_as) for row in parts):
+        refused = next((row for row in withheld if matches(row, shipped_as)), None)
+        if refused is not None:
+            return str(refused.get("reason") or CREDIT_UNREADABLE)
+        if not any(matches(row, shipped_as) for row in parts):
             return FURTHER_UNACCOUNTED
     return None
 
@@ -361,7 +395,7 @@ def credited(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]
                 kept.append(row)
                 continue
             matched = sorted(prim for prim, shipped_as in prims.items()
-                             if prim in placed and _matches(row["further_object"], shipped_as))
+                             if prim in placed and matches(row["further_object"], shipped_as))
             if matched:
                 kept.append({**row, "part": matched[0], "credited_files": _part_files(row, Path(staging), placed,
                                                                                        matched)})
@@ -386,5 +420,6 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
 __all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
            "VARIATIONS_FILE",
            "changes", "credit", "credited",
-           "FURTHER_UNACCOUNTED", "credit_text", "credited_files", "further_credits", "further_prims", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
-           "topology_digest"]
+           "FURTHER_UNACCOUNTED", "credit_text", "credited_files", "further_credits", "further_prims", "identity",
+           "matches", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped", "topology_digest",
+           "without_withheld"]

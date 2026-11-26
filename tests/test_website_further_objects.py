@@ -1,5 +1,7 @@
-"""Several objects per job, stage 3: each free further object authored on the CPU, placed where it was filmed and
-carried into the composed scene and the company's package as ``/World/Object_02`` onward, beside the scored object.
+"""Several objects per job, stages 3 and 4: each free further object authored on the CPU, placed where it was filmed
+(seated on its support by its own file's lowest point) and carried into the composed scene and the company's package
+as ``/World/Object_02`` onward, beside the scored object; what the package's README and plan note say of each; and a
+further object whose library model cannot be credited left out alone.
 
 The fixture is ``tests.test_website_task_preparation``'s captured cup on its table, filmed with more objects beside it
 (raised patches in the frames, absent from the collider, as objects taken out before reconstruction are). One-object
@@ -9,6 +11,11 @@ Offline: no provider, no network, nothing paid.
 # Covers: src/blueprint_pipeline/website_further_objects.py
 # Covers: src/blueprint_pipeline/website_preparation_request.py
 # Covers: src/blueprint_pipeline/website_task_preparation.py
+# Covers: src/blueprint_pipeline/website_company_readme.py
+# Covers: src/blueprint_pipeline/website_build_plan_notes.py
+# Covers: src/blueprint_pipeline/website_library_notes.py
+# Covers: src/blueprint_pipeline/website_half_preparation.py
+# Covers: src/blueprint_pipeline/website_packet_facts.py
 from __future__ import annotations
 
 import hashlib
@@ -109,15 +116,17 @@ def _plan_row(target: str, *, sourcing: str = "parametric", shape: str | None = 
             "reason": f"The job moves the {LABELS[target]}.", "editor_object_ids": ["e-" + target]}
 
 
-def _seal_pick(library_root: Path, row: dict, context: dict, size=(0.16, 0.034, 0.22)) -> dict:
-    """The mug box's library pick as the library step seals one: a box model, its credit and its fetched file."""
+def _seal_pick(library_root: Path, row: dict, context: dict, size=(0.16, 0.034, 0.22), *, credit: dict = CREDIT,
+               model: bytes | None = None) -> dict:
+    """The mug box's library pick as the library step seals one: a box model (or ``model``), its credit and its
+    fetched file."""
     from blueprint_pipeline.website_extra_objects import object_root
     root = object_root(library_root, row["target_id"])
     (root / "files").mkdir(parents=True, exist_ok=True)
     mesh = root / "files" / "model.obj"
-    mesh.write_bytes(_box_obj(*size))
+    mesh.write_bytes(_box_obj(*size) if model is None else model)
     subject = {"schema_version": library.SUBJECT_SCHEMA, "target_id": row["target_id"], "route": "extra",
-               "reading_digest": library.reading_digest(row, context), "attribution": dict(CREDIT),
+               "reading_digest": library.reading_digest(row, context), "attribution": dict(credit),
                "files": [{"role": "mesh", "path": str(mesh), "sha256": hashlib.sha256(mesh.read_bytes()).hexdigest(),
                           "size_bytes": mesh.stat().st_size, "suffix": ".obj"}],
                "pick": {"source": "model", "reason": "The same kind of object."}}
@@ -132,8 +141,10 @@ def _catalog(monkeypatch):
     monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"}])
 
 
-def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22)) -> list[dict]:
-    """``further_inputs`` from a sealed build plan: the cup first (the scored object), then ``rows``."""
+def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22),
+            picks: dict | None = None) -> list[dict]:
+    """``further_inputs`` from a sealed build plan: the cup first (the scored object), then ``rows``; the mug box's
+    library pick sealed, and each of ``picks`` (a target's credit and model file)."""
     context, entries = arguments["task_context"], arguments["removal_manifest"]["entries"]
     editor = [{"target_id": "e-" + row["target_id"], "label": row["semantic_label"], "disposition": "remove"}
               for row in entries]
@@ -145,6 +156,9 @@ def _inputs(arguments: dict, rows: list[dict], *, size=(0.16, 0.034, 0.22)) -> l
     for row in plan["objects"]:
         if row["target_id"] == "mug-1":
             _seal_pick(library_root, row, context, size)
+        elif row["target_id"] in (picks or {}):
+            credit, model = picks[row["target_id"]]
+            _seal_pick(library_root, row, context, credit=credit, model=model)
     return further.further_inputs(plan, entries=entries, editor_objects=editor, task_context=context,
                                   library_root=library_root)
 
@@ -205,8 +219,9 @@ def test_two_free_further_objects_are_authored_placed_where_filmed_and_composed_
     for row in (carton, mug):
         low, high = row["bounds_world_m"]["minimum"], row["bounds_world_m"]["maximum"]
         assert low[2] == pytest.approx(table, abs=1e-6) and row["support"]["basis"].startswith("support_under")
-        assert row["pose_world"] == {"position_world_m": [(a + b) / 2 for a, b in zip(low, high)],
-                                     "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+        assert row["pose_world"]["orientation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+        assert row["pose_world"]["position_world_m"] == pytest.approx([(a + b) / 2 for a, b in zip(low, high)],
+                                                                      abs=1e-6)
         assert high[0] < subject["aabb_min_xyz"][0]  # filmed left of the cup, so placed left of it
     assert carton["bounds_world_m"]["maximum"][0] < mug["bounds_world_m"]["minimum"][0]
     # The intake request names both, ranked; composition read them from it.
@@ -235,6 +250,59 @@ def test_a_library_model_whose_proportions_miss_falls_back_to_its_shape_and_says
     assert mug["source"] == "parametric" and mug["parametric_design"]["shape"] == "carton"
     assert mug["library_not_used"].startswith("library_aspect_mismatch")
 
+
+
+def _seated_bottom(out: Path, row: dict) -> tuple[float, float]:
+    """Where the further object's file, placed at its pose, has its lowest point, and how tall the file is: read from
+    the file itself, never from the record's own bounds."""
+    from pxr import Usd, UsdGeom
+    stage = Usd.Stage.Open(str(out / row["asset"]["relative_path"]))
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.guide])
+    box = cache.ComputeWorldBound(stage.GetDefaultPrim()).ComputeAlignedRange()
+    return row["pose_world"]["position_world_m"][2] + box.GetMin()[2], box.GetMax()[2] - box.GetMin()[2]
+
+
+@pytest.mark.parametrize("factor", [1.1, 0.9], ids=["taller", "shorter"])
+def test_a_library_model_taller_or_shorter_than_the_estimate_sits_exactly_on_its_support(tmp_path, factor):
+    """Codex review of #3755: a library model used as it is, within the size tolerance but not the estimate's height,
+    was placed by the estimated box's middle, so a taller one sank into the table and a shorter one floated above it.
+    It is seated by its own file's lowest point now, and its compose-back record names the same place."""
+    value = _compile(tmp_path / "job", ["mug-1"], [_plan_row("mug-1")], size=(0.16, 0.034, 0.22 * factor))
+    assert value["status"] == "intake_ready", value["blockers"]
+    (mug,) = value["further_objects"]["objects"]
+    assert mug["source"] == "library" and mug["library_design"]["sizing"]["status"] == "as_is"
+    table = value["subject"]["aabb_min_xyz"][2]
+    bottom, height = _seated_bottom(tmp_path / "job" / "out", mug)
+    assert bottom == pytest.approx(table, abs=further.FLOAT_SLACK_M)  # on the table: neither sunk nor floating
+    estimated = mug["estimated_bounds_world_m"]
+    seen = estimated["maximum"][2] - estimated["minimum"][2]
+    assert height == pytest.approx(0.22 * factor, abs=1e-6) and abs(height - seen) > 0.01  # not the estimate's height
+    assert mug["bounds_world_m"]["minimum"][2] == pytest.approx(table, abs=1e-9)
+    assert mug["bounds_world_m"]["maximum"][2] - mug["bounds_world_m"]["minimum"][2] == pytest.approx(height, abs=1e-6)
+    assert mug["support"]["seated_on"] == "authored_asset_bottom"
+    # The footprint's middle is where the video shows it, as before.
+    assert mug["pose_world"]["position_world_m"][:2] == pytest.approx(
+        [(a + b) / 2 for a, b in zip(estimated["minimum"][:2], estimated["maximum"][:2])], abs=1e-9)
+    # The compose-back record and the intake request say the same place and box.
+    to_sim = np.asarray(value["coordinate_frame"]["runtime_to_simulator"], dtype=float)
+    back = to_sim @ [*mug["compose_back"]["pose_world"]["position"], 1.0]
+    assert back[:3].tolist() == pytest.approx(mug["pose_world"]["position_world_m"], abs=1e-9)
+    (requested,) = value["intake_request"]["task"]["additional_objects"]
+    assert requested["subject"]["aabb_min_xyz"] == mug["bounds_world_m"]["minimum"]
+    assert requested["subject"]["aabb_max_xyz"] == mug["bounds_world_m"]["maximum"]
+
+
+def test_a_seated_object_keeps_its_middle_and_puts_its_own_lowest_point_on_the_support():
+    """``seat`` alone: an asset whose origin is not its middle is seated by its own lowest point, in both up axes."""
+    estimated = ([1.0, 2.0, 0.5], [1.2, 2.4, 0.7])
+    asset = {"minimum": [-0.1, -0.2, -0.03], "maximum": [0.1, 0.2, 0.19]}  # 22 cm tall, origin 3 cm above its bottom
+    for to_sim in (np.diag([2.0, 2.0, 2.0, 1.0]),
+                   np.array([[2.0, 0, 0, 0], [0, 0, -2.0, 0], [0, 2.0, 0, 0], [0, 0, 0, 1.0]])):
+        seated = further.seat(asset, estimated=estimated, runtime_to_sim=to_sim)
+        assert seated["position"] == pytest.approx([1.1, 2.2, 0.53])
+        assert seated["bounds"][0][2] == pytest.approx(0.5) and seated["bounds"][1][2] == pytest.approx(0.72)
+        centre = [(a + b) / 2 for a, b in zip(*seated["runtime"])]
+        assert (to_sim @ [*centre, 1.0])[:3].tolist() == pytest.approx(seated["position"])
 
 def test_without_further_objects_a_several_object_job_is_handled_as_before(tmp_path):
     arguments = _job(tmp_path / "job", ["carton-1"])
@@ -285,6 +353,11 @@ def test_a_further_object_that_needs_artisan_fails_its_static_check_or_overlaps_
     assert [row["rank"] for row in record["left_in_scan"]] == [3, 4, 5]
     assert record["flags"] == [further.LEFT_IN_SCAN]
     assert further.LEFT_IN_SCAN in preparation_record_flags(value)
+    # The company's page says so in plain words, claiming no reason the flag does not carry.
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES
+    assert ESTIMATE_SENTENCES[further.LEFT_IN_SCAN] == (
+        "One or more of the job's other objects were not built as objects of their own: they are left as the scan "
+        "shows them, and the success rule does not score them.")
     # Only what was composed is in the request and the composed manifest.
     assert [row["rank"] for row in value["intake_request"]["task"]["additional_objects"]] == [2]
     composed = json.loads((tmp_path / "job" / "out" / "removal_manifest.composed.json").read_text())
@@ -512,16 +585,35 @@ def test_a_half_without_the_arm_keeps_both_further_objects(tmp_path, monkeypatch
     assert record["further_objects"]["composed"] == ["job_object_02", "job_object_03"]
 
 
-def _published(tmp_path: Path, further_objects: dict, record: dict | None) -> tuple[dict, Path]:
+def _decision(targets: list[str]) -> dict:
+    """The Atlas job's sealed decision with its build plan: the cup first (the object it takes out of the scan to
+    build), then ``targets``, as their plan rows (``_plan_row``) name them."""
+    from blueprint_pipeline.website_build_plan_notes import DECISION_SCHEMA
+    sourcing = {"cup-1": "generate", "mug-1": "library", "artisan-1": "generate"}
+    rows = [_plan_row(name, sourcing=sourcing.get(name, "parametric"),
+                      shape=None if sourcing.get(name) == "generate" else "carton") for name in ["cup-1", *targets]]
+    decided = {"schema_version": DECISION_SCHEMA, "applied": False, "build_plan": {"plan": {"objects": rows}},
+               "built": {"target_id": "cup-1", "editor_object_ids": ["e-cup-1"]}}
+    decided["digest"] = canonical_digest(decided, digest_field="digest")
+    return decided
+
+
+def _published(tmp_path: Path, further_objects: dict, record: dict | None,
+               decided: dict | None = None, extra: dict | None = None) -> tuple[dict, Path]:
     """The company's package of a half compiled with ``further_objects``, read from a capture whose preparation holds
     ``record`` as its ``further_objects`` (as the package reads its notes and credits, ``website_half_preparation``),
-    or no such record; the publication's result and where the package was unpacked."""
+    or no such record (and ``extra``), and whose Atlas job sealed ``decided``; the publication's result and where the
+    package was unpacked."""
     import zipfile
 
     from tests.test_website_company_simulation import Job, World, _package
     compiled, _record, _plan = _half(tmp_path, further_objects)
     job = Job(tmp_path / "download")
-    job.preparation.write_text(json.dumps({"further_objects": record} if record is not None else {}))
+    job.preparation.write_text(json.dumps({**({"further_objects": record} if record is not None else {}),
+                                           **(extra or {})}))
+    if decided is not None:
+        (job.capture / "pipeline" / "atlas").mkdir(parents=True, exist_ok=True)
+        (job.capture / "pipeline" / "atlas" / "job_object_rule.json").write_text(json.dumps(decided))
     status = next((job.queue / "status").glob("*.json"))
     status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": compiled["path"]}))
     result = World(job).publish()
@@ -613,3 +705,257 @@ def test_a_further_part_its_preparation_does_not_account_for_never_leaves(tmp_pa
         assert notes.refusal(source) == notes.FURTHER_UNACCOUNTED
         with pytest.raises(sim.ShapeRefused, match=notes.FURTHER_UNACCOUNTED):
             sim.build_package(source, tmp_path / str(index) / "package.zip", literals=[])
+
+
+# --- S4: what the README says of each further object ----------------------------------------------------------------
+
+def _readme(unpacked: Path) -> str:
+    return " ".join((unpacked / "README.txt").read_text().split())
+
+
+def test_the_readme_names_each_further_object_how_it_was_built_and_each_left_in_the_scan_with_why(tmp_path):
+    """Two further objects composed and one left in the scan: the README names each part the package holds by its
+    prim and how it was built, says its place is the video's estimate, says the rule scores only the job's object, and
+    its plan note says what became of each further object; the library model's geometry ships with its credit."""
+    capture, value = _composed(tmp_path)
+    record = {**value["further_objects"], "left_in_scan": [
+        {"rank": 4, "target_id": "static-1", "reason": "further_object_static_check_failed:no_collider"}]}
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))), record,
+                                  _decision(["carton-1", "mug-1", "static-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    for sentence in (
+            # The plan, and what became of each of its further objects.
+            "What this simulation needs, as Blueprint's model read the job: cup, carton, mug box and crate.",
+            "The plan takes this out of the scan to build as its own object: cup.",
+            "Also built as their own objects, where the video shows them: carton and mug box.",
+            "Left in the scan as filmed, not built on its own: crate, because its file did not pass Blueprint's "
+            "static check.",
+            # The parts the package holds, by their prims, how each was built, and its place an estimate.
+            "The package also holds /World/Object_02 (carton): a plain carton shape Blueprint made for it, sized from "
+            "the video, with none of the real object's detail. It stands where the video shows it; that position is "
+            "an estimate from the video, not a measurement.",
+            "The package also holds /World/Object_03 (mug box): a model of the same kind of object from a public "
+            "library, picked and sized from the video and credited under Library models; it is not the site's own "
+            "object. It stands where the video shows it; that position is an estimate from the video, not a "
+            "measurement.",
+            # The rule scores only the top-ranked object.
+            "success_rule.json scores only the job's object, /World/Object. /World/Object_02 and /World/Object_03 are "
+            "also the job's objects, placed where the video shows them; the rule does not score them."):
+        assert sentence in readme, sentence
+    assert "keeps these in the scan" not in readme and "exactly" not in readme
+    # The plan's words ship only as plain object words; the library model ships with its credit naming its files.
+    credit = readme.split("Library models", 1)[1]
+    assert "- scene/object_03.usda and variations.usda: Test Mug Box by Google" in credit
+    mug = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")
+    assert _uncredited(unpacked, mug["library_design"]) == []
+    # The further objects' record names the package's revision: the same package without it is another revision.
+    from blueprint_pipeline import website_company_simulation as sim
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert source["further_objects"]["left_in_scan"] == [
+        {"rank": 4, "target_id": "static-1", "name": "crate", "reason": "further_object_static_check_failed:no_collider"}]
+    assert sim.simulation_revision(source) != sim.simulation_revision({**source, "further_objects": None})
+
+
+def test_a_further_object_built_but_left_out_of_the_half_is_said_to_be_not_in_the_package(tmp_path):
+    capture, value = _composed(tmp_path)
+    carton = next(row for row in value["further_objects"]["objects"] if row["source"] == "parametric")
+    changed = capture / "pipeline" / "website_scene_preparation" / carton["asset"]["relative_path"]
+    changed.write_bytes(changed.read_bytes() + b"\n")  # changed since it was composed: the half leaves it out
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))),
+                                  value["further_objects"], _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    assert "Built as its own object but not in this package: carton." in readme
+    assert "The package also holds /World/Object_02 (mug box): a model of the same kind of object" in readme
+    assert "/World/Object_03" not in readme
+
+
+def test_the_plan_note_says_what_became_of_each_further_object_and_nothing_without_them():
+    from blueprint_pipeline.website_build_plan_notes import LEFT_FOR_ANOTHER_REASON, left_words, plan_notes
+    decided = _decision(["carton-1", "mug-1", "static-1", "artisan-1"])
+    before = plan_notes(decided)
+    assert before[2] == "The plan keeps these in the scan as filmed, not built on their own: carton, mug box, crate and " \
+                        "an object the job moves."  # the stale note, still true without a further-objects record
+    assert plan_notes(decided, None, {"composed": [], "left_in_scan": []}) == before
+    notes = plan_notes(decided, None, {"composed": [{"target_id": "mug-1"}], "left_in_scan": [
+        {"target_id": "artisan-1", "reason": "further_object_needs_artisan:website_extra_object_no_free_source"},
+        {"target_id": "static-1", "reason": "further_object_overlaps:scored_object_destination"}]})
+    assert notes[2:] == [
+        "Also built as its own object, where the video shows it: mug box.",
+        "Left in the scan as filmed, not built on its own: an object the job moves, because it needs a model "
+        "Blueprint would generate, and none was made for it.",
+        "Left in the scan as filmed, not built on its own: crate, because where the video shows it, it would overlap "
+        "where the job's object goes.",
+        "The plan keeps these in the scan as filmed, not built on their own: carton."]
+    # A reason it has no words for is never guessed at.
+    assert left_words("further_object_something_new:x") == left_words("further_object_overlaps:elsewhere") \
+        == LEFT_FOR_ANOTHER_REASON
+
+
+# --- S4: a further object whose library model cannot be credited is left out alone ---------------------------------
+
+CARTON_ID = "gso:Test_Carton_Box@1"
+CARTON_CREDIT = {**CREDIT, "entry_id": CARTON_ID, "title": "Test Carton Box",
+                 "item_url": "https://fuel.gazebosim.org/1.0/GoogleResearch/models/Test_Carton_Box/1/Test_Carton_Box.zip"}
+
+
+def _fanned_box_obj(x: float, y: float, z: float) -> bytes:
+    """A box whose top is four triangles about its middle: another mesh (another topology) than ``_box_obj``'s."""
+    corners = [(sx * x / 2, sy * y / 2, sz * z) for sz in (0, 1) for sy in (-1, 1) for sx in (-1, 1)]
+    faces = [(1, 3, 4, 2), (1, 2, 6, 5), (3, 7, 8, 4), (1, 5, 7, 3), (2, 4, 8, 6),
+             (5, 6, 9), (6, 8, 9), (8, 7, 9), (7, 5, 9)]
+    return ("\n".join([*(f"v {a:.6f} {b:.6f} {c:.6f}" for a, b, c in [*corners, (0.0, 0.0, z)]),
+                       *("f " + " ".join(str(i) for i in face) for face in faces)]) + "\n").encode()
+
+
+def _two_library_models(tmp_path: Path, monkeypatch) -> tuple[Path, dict]:
+    """A capture whose preparation composed the carton and the mug box, each from its own library model."""
+    monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"},
+                                                                      {"id": CARTON_ID, "license": "CC-BY-4.0"}])
+    capture = tmp_path / "capture"
+    arguments = _job(tmp_path / "job", ["carton-1", "mug-1"])
+    arguments["output_root"] = capture / "pipeline" / "website_scene_preparation"
+    value = preparation.compile_website_scene_preparation(**arguments, further_objects=_inputs(
+        arguments, [_plan_row("carton-1"), _plan_row("mug-1")],
+        picks={"carton-1": (CARTON_CREDIT, _fanned_box_obj(0.16, 0.034, 0.22))}))
+    assert [(row["prim_path"], row["source"], row["library_design"]["entry_id"])
+            for row in value["further_objects"]["objects"]] == [("/World/Object_02", "library", CARTON_ID),
+                                                                ("/World/Object_03", "library", ENTRY_ID)]
+    return capture, value
+
+
+def _holding(unpacked: Path, design: dict) -> list[str]:
+    """Every shipped USD file with a mesh of the model's own topology, read independently of the package's credit."""
+    from blueprint_pipeline.website_library_notes import mesh_topologies
+    topology = (int(design["model_topology"][0]), str(design["model_topology"][1]))
+    return sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")
+                  if path.suffix in (".usd", ".usda", ".usdc", ".usdz") and topology in mesh_topologies(path))
+
+
+def test_a_further_objects_refused_credit_leaves_out_that_object_alone_and_the_rest_ship_credited(tmp_path, monkeypatch):
+    """Rights: the carton's library model is no longer allowed by the deployed catalog. Before, the whole package went
+    to the room floor; now only the carton is left out (its geometry never ships), said in the README and on the
+    package's record, and the job's object and the mug box, credited, ship."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_library_notes as notes
+    capture, value = _two_library_models(tmp_path, monkeypatch)
+    monkeypatch.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": ENTRY_ID, "license": "CC-BY-4.0"}])
+    found = _in_room(further.for_revision(capture, _revision(capture)))
+    result, unpacked = _published(tmp_path, found, value["further_objects"], _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    carton, mug = value["further_objects"]["objects"]
+    # Only the carton is left out: the mug box takes the first further prim, and the rule names only it.
+    assert (unpacked / "scene" / "object_02.usda").is_file() and not (unpacked / "scene" / "object_03.usda").exists()
+    rule = json.loads((unpacked / "success_rule.json").read_text())
+    assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02"]
+    readme = _readme(unpacked)
+    assert ("Not in this package: carton. It was built from a library model whose license Blueprint can no longer "
+            "confirm, so its geometry is left out.") in readme
+    assert "The package also holds /World/Object_02 (mug box): a model of the same kind of object" in readme
+    credit = readme.split("Library models", 1)[1]
+    assert "- scene/object_02.usda and variations.usda: Test Mug Box by Google" in credit
+    assert "Test Carton Box" not in readme
+    # Independently of the package's own credit: the mug box's geometry ships named in its credit, the carton's not at
+    # all.
+    assert _uncredited(unpacked, mug["library_design"]) == []
+    assert _holding(unpacked, carton["library_design"]) == []
+    # Flagged on the package's record, by the carton's identity and the credit's own refusal.
+    manifest = json.loads((result["job"].capture / "pipeline" / "company_simulation" / "company_simulation.json")
+                          .read_text())
+    (withheld,) = manifest["source"]["further_withheld"]
+    assert (withheld["target_id"], withheld["reason"], withheld["runtime_asset_id"]) == (
+        "carton-1", notes.LICENSE_REFUSED, carton["runtime_asset_id"])
+    # Library geometry still never ships without its credit: were the carton's part placed all the same, the package
+    # would not leave with it.
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert notes.refusal(source) is None
+    monkeypatch.setattr(notes, "without_withheld", lambda plan, _source: plan)
+    unfiltered = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert len(notes.further_prims(unfiltered)) == 2
+    assert notes.refusal(unfiltered) == notes.LICENSE_REFUSED
+    with pytest.raises(sim.ShapeRefused, match=notes.LICENSE_REFUSED):
+        sim.build_package(unfiltered, tmp_path / "unfiltered.zip", literals=[])
+
+
+def test_a_further_objects_unreadable_credit_leaves_out_that_object_alone(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_library_notes as notes
+    capture, value = _two_library_models(tmp_path, monkeypatch)
+    record = json.loads(json.dumps(value["further_objects"]))
+    del record["objects"][1]["library_design"]["attribution"]["author"]  # the mug box's credit cannot be read
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))), record,
+                                  _decision(["carton-1", "mug-1"]))
+    assert result["status"] == "published", result
+    readme = _readme(unpacked)
+    assert ("Not in this package: mug box. It was built from a library model whose credit could not be read, so its "
+            "geometry is left out.") in readme
+    assert "- scene/object_02.usda and variations.usda: Test Carton Box by Google" in readme
+    assert _holding(unpacked, value["further_objects"]["objects"][1]["library_design"]) == []
+    assert notes.further_credits({"further_objects": record}, capture)["further_withheld"][0]["reason"] == \
+        notes.CREDIT_UNREADABLE
+
+
+def test_the_job_objects_own_refused_credit_still_ships_the_room_floor(tmp_path):
+    """The scored object's credit is as before: when it cannot be read, the package may not leave with the object."""
+    from blueprint_pipeline import website_library_notes as notes
+    refused = notes.merged({"library_refusal": notes.CREDIT_UNREADABLE},
+                           {"further_withheld": [{"runtime_asset_id": "x", "asset_sha256": "y", "reason": "z"}]})
+    assert refused == {"library_refusal": notes.CREDIT_UNREADABLE}
+    assert notes.refusal({"files": {"Object": {"role": "task_object"}}, **refused}) == notes.CREDIT_UNREADABLE
+
+
+# --- S4: each further object varied on its own evidence ------------------------------------------------------------
+
+def test_each_further_object_is_varied_on_its_own_size_and_mass_evidence_never_the_job_objects(tmp_path):
+    """A further object's variation ranges rest on its own evidence, as the job's object's do: its plan row's mass
+    quoted from the site's words, else the mass prior from its own size in the video; for size, the video's scale band.
+    The site's answer of the item's weight is the job's object's alone."""
+    capture, value = _composed(tmp_path)
+    decided = _decision(["carton-1", "mug-1"])
+    plan = decided["build_plan"]["plan"]["objects"]
+    plan[1] = {**plan[1], "mass_kg": {"low": 0.2, "high": 0.4, "basis": "site_words"}}  # the carton's, as the site said
+    decided["digest"] = canonical_digest(decided, digest_field="digest")
+    answer = {"authoring_inputs": {"configuration": {"construction_constraints": {
+        "operator_task_details": {"item_weight": "2 kg"}}}, "metric_envelope": value["authoring_inputs"]["metric_envelope"]}}
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))),
+                                  value["further_objects"], decided, answer)
+    assert result["status"] == "published", result
+    by_part = {row["part"]: row["ranges"] for row in json.loads((unpacked / "variations.json").read_text())["objects"]}
+    assert by_part["/World/Object"]["mass_kg"]["from"] == "site_answer_item_weight"  # the job's object's own answer
+    carton, mug = by_part["/World/Object_02"], by_part["/World/Object_03"]
+    assert {key: carton["mass_kg"][key] for key in ("low", "high", "basis", "from")} == {
+        "low": 0.2, "high": 0.4, "basis": "site_answer", "from": "build_plan_site_words"}
+    prior = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")[
+        "asset_receipt"]["physics_bounds"]["mass_kg"]
+    assert [mug["mass_kg"][key] for key in ("low", "high", "basis", "from")] == [
+        round(prior[0], 6), round(prior[1], 6), "video_estimate", "video_size_prior"]
+    for ranges in (carton, mug):
+        assert (ranges["scale"]["basis"], ranges["scale"]["from"]) == ("video_estimate", "video_scale_band")
+        assert [ranges["scale"]["low"], ranges["scale"]["high"]] == [0.75, round(1 / 0.75, 6)]
+        assert ranges["static_friction"]["basis"] == "default"
+    readme = _readme(unpacked)
+    assert "/World/Object_02: size (video_estimate), mass (site_answer) and friction (default)." in readme
+    assert "/World/Object_03: size (video_estimate), mass (video_estimate) and friction (default)." in readme
+    # Matched by identity, never by prim: a part another object's evidence does not name gets default bands.
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_object_variations as variations
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert variations._told(source, "Object_02")["mass_kg"]["from"] == "build_plan_site_words"
+    rows = source["variation_evidence"][variations.FURTHER_EVIDENCE]
+    renamed = {**source, "variation_evidence": {**source["variation_evidence"], variations.FURTHER_EVIDENCE: [
+        {**row, "asset_sha256": "sha256:" + "0" * 64} for row in rows]}}
+    assert variations._told(renamed, "Object_02") == {}
+
+
+def test_a_further_part_of_another_source_is_said_to_be_held_and_no_more():
+    """A part the package holds is never said to be missing because its source has no words of its own yet."""
+    from blueprint_pipeline import website_company_readme as company_readme
+    identity = {"runtime_asset_id": "job_02", "asset_sha256": "sha256:" + "1" * 64}
+    pose = {"position_world_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]}
+    source = {"plan": {"objects": [{"semantic_role": "task_object", "asset_id": "obj", "usd_path": "o.usda", "pose_world": pose},
+                                   {"semantic_role": "job_object", "asset_id": "job_02", "usd_path": "a.usda",
+                                    "pose_world": pose}]},
+              "files": {"Object": {"sha256": "sha256:" + "2" * 64}, "Object_02": {"sha256": identity["asset_sha256"]}},
+              "further_objects": {"composed": [{**identity, "name": "crate", "source": "generated"}]}}
+    assert company_readme.further_notes(source) == [company_readme.FURTHER_HELD.format(
+        prim="Object_02", name="crate", how=company_readme.FURTHER_HOW_OTHERWISE)]
