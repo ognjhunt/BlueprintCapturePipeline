@@ -5,7 +5,9 @@ set -euo pipefail
 # secrets the owner supplies. Idempotent: every step can run again on a host it already rebuilt.
 #
 #   1. Preflight: every owner secret in deploy/host/rebuild-owner-secrets.txt is present, in
-#      --secrets-from or already under /etc/blueprint. A missing one stops the rebuild and is named.
+#      --secrets-from or already under /etc/blueprint, and so is the owner's private half of the backup
+#      key (control-plane-backup/private_key.pem under --secrets-from, mode 0600), which alone can read
+#      the backup. A missing one stops the rebuild and is named.
 #      Nothing is ever invented for a secret, a money limit or an approval; --waive-secret NAME lets the
 #      owner go on without one, and says so (the units that read it then fail until it is supplied).
 #   2. The service account (as the installer creates it).
@@ -16,7 +18,8 @@ set -euo pipefail
 #      deploy/host/mount_work_volume.sh --device DEV --apply, which binds them. It then checks that every
 #      bulk root is a mount point on the work volume and refuses to go on otherwise, so nothing below
 #      writes into the root disk (--verify-volume runs that check alone).
-#   5. The owner's secrets into /etc/blueprint (0640 root:blueprint; the backup key and bucket 0600 root).
+#   5. The owner's secrets into /etc/blueprint (0640 root:blueprint). The backup's private key is not
+#      one of them: it is read where the owner supplied it and never copied onto the host.
 #   6. The state restore: python -m blueprint_pipeline.control_plane_state_backup restore. It verifies every
 #      file, restores the standing approvals exactly as they were, and writes the money hold that keeps
 #      paid admission closed until the spend guard's reap and the billing reconciler have caught up (it
@@ -64,7 +67,9 @@ ROOT="${ROOT%/}"
 ETC="${ROOT}/etc/blueprint"
 SECRETS_LIST="${REPO_ROOT}/deploy/host/rebuild-owner-secrets.txt"
 VENV="${VENV:-${REPO_ROOT}/.venv}"
-BACKUP_ETC="${ETC}/control-plane-backup"
+# The owner's private half of the backup key: read for the restore, never installed.
+RESTORE_KEY_NAME="control-plane-backup/private_key.pem"
+RESTORE_KEY=""
 REPORT_ROOT="${ROOT}/var/lib/blueprint/pipeline-control-plane/control-plane-backup"
 MOUNT_SCRIPT="${REPO_ROOT}/deploy/host/mount_work_volume.sh"
 MOUNTINFO="${BLUEPRINT_REBUILD_MOUNTINFO:-/proc/self/mountinfo}"
@@ -132,6 +137,12 @@ while IFS= read -r name; do
   fi
   missing+=("${name}")
 done < "${SECRETS_LIST}"
+if [[ -n "${SECRETS_FROM}" && -e "${SECRETS_FROM}/${RESTORE_KEY_NAME}" ]]; then
+  RESTORE_KEY="${SECRETS_FROM}/${RESTORE_KEY_NAME}"
+else
+  # Never waived: without it no backup can be read, so there is nothing to rebuild from.
+  missing+=("${RESTORE_KEY_NAME}")
+fi
 if [[ "${#missing[@]}" -gt 0 ]]; then
   for name in "${missing[@]}"; do
     echo "missing owner secret: ${name}" >&2
@@ -190,13 +201,10 @@ fi
 # ---------------------------------------------------------------- 5. the owner's secrets
 if [[ -n "${SECRETS_FROM}" ]]; then
   step install -d -m 0750 -o root -g blueprint "${ETC}" "${ETC}/provider-secrets" "${ETC}/credentials"
-  step install -d -m 0700 -o root -g root "${BACKUP_ETC}"
   while IFS= read -r name; do
     [[ -z "${name}" || "${name}" == \#* || ! -e "${SECRETS_FROM}/${name}" ]] && continue
     if [[ -d "${SECRETS_FROM}/${name}" ]]; then
       step cp -a "${SECRETS_FROM}/${name}/." "${ETC}/${name}/"
-    elif [[ "${name}" == control-plane-backup/* ]]; then
-      step install -m 0600 -o root -g root "${SECRETS_FROM}/${name}" "${ETC}/${name}"
     else
       step install -m 0640 -o root -g blueprint "${SECRETS_FROM}/${name}" "${ETC}/${name}"
     fi
@@ -205,12 +213,12 @@ fi
 
 # ---------------------------------------------------------------- 6. the state restore
 restore=(env PYTHONPATH="${REPO_ROOT}/src"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_ENCRYPTION_KEY_FILE="${BACKUP_ETC}/encryption_key"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_ACCESS_KEY_ID_FILE="${BACKUP_ETC}/b2_key_id"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_SECRET_ACCESS_KEY_FILE="${BACKUP_ETC}/b2_application_key"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_BUCKET_FILE="${BACKUP_ETC}/b2_bucket"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_ENDPOINT_URL_FILE="${BACKUP_ETC}/b2_s3_endpoint_url"
-  BLUEPRINT_CONTROL_PLANE_BACKUP_REGION_FILE="${BACKUP_ETC}/b2_region"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_PRIVATE_KEY_FILE="${RESTORE_KEY}"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_ACCESS_KEY_ID_FILE="${ETC}/provider-secrets/backblaze_b2_key_id"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_SECRET_ACCESS_KEY_FILE="${ETC}/provider-secrets/backblaze_b2_application_key"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_BUCKET_FILE="${ETC}/provider-secrets/backblaze_b2_bucket"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_ENDPOINT_URL_FILE="${ETC}/provider-secrets/backblaze_b2_s3_endpoint_url"
+  BLUEPRINT_CONTROL_PLANE_BACKUP_REGION_FILE="${ETC}/provider-secrets/backblaze_b2_region"
   BLUEPRINT_CONTROL_PLANE_BACKUP_REPORT_ROOT="${REPORT_ROOT}"
   "${VENV}/bin/python" -m blueprint_pipeline.control_plane_state_backup restore
   --fs-root "${ROOT:-/}" --generation "${GENERATION}" --ack restore-control-plane-state)

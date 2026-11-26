@@ -20,8 +20,13 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(SCRIPT), "--dry-run", *args], capture_output=True, text=True, timeout=60)
 
 
-def _supply(directory: Path, names: list[str]) -> None:
-    for name in names:
+RESTORE_KEY = "control-plane-backup/private_key.pem"
+
+
+def _supply(directory: Path, names: list[str], *, restore_key: bool = True) -> None:
+    """The owner's secrets directory: the listed files and, unless told not to, the backup's private key."""
+
+    for name in [*names, *([RESTORE_KEY] if restore_key else [])]:
         path = directory / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("owner-supplied\n")
@@ -79,6 +84,26 @@ def test_the_dry_run_with_every_secret_plans_every_step_and_changes_nothing(tmp_
                                               for root in roots)
     assert "rebuild planned" in result.stdout
     assert not host.exists()
+
+
+def test_the_backups_private_key_is_required_never_installed_and_cannot_be_waived(tmp_path):
+    secrets = tmp_path / "secrets"
+    host = tmp_path / "host"
+    assert RESTORE_KEY not in _names()  # no unit reads it: the host cannot read its own backup
+    _supply(secrets, _names(), restore_key=False)
+    refused = _run("--root", str(host), "--secrets-from", str(secrets), "--work-volume-device", "/dev/x",
+                   "--waive-secret", RESTORE_KEY)
+    assert refused.returncode == 3
+    assert f"missing owner secret: {RESTORE_KEY}" in refused.stderr and "plan:" not in refused.stdout
+    _supply(secrets, [])
+    planned = _run("--root", str(host), "--secrets-from", str(secrets), "--work-volume-device", "/dev/x")
+    assert planned.returncode == 0, planned.stderr
+    restore = next(line for line in planned.stdout.splitlines() if "control_plane_state_backup restore" in line)
+    # Read where the owner supplied it; the bucket is the artifact store's, whose files the rebuild installs.
+    assert f"BLUEPRINT_CONTROL_PLANE_BACKUP_PRIVATE_KEY_FILE={secrets}/{RESTORE_KEY}" in restore
+    assert f"BLUEPRINT_CONTROL_PLANE_BACKUP_BUCKET_FILE={host}/etc/blueprint/provider-secrets/backblaze_b2_bucket" in restore
+    assert "ENCRYPTION_KEY" not in planned.stdout
+    assert not any("private_key.pem" in line and "install " in line for line in planned.stdout.splitlines())
 
 
 def test_a_waived_secret_is_named_never_defaulted(tmp_path):

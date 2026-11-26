@@ -180,10 +180,18 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                             "TimeoutStartSec=20min", "OnFailure=" + NOTIFIER_ON_FAILURE, "Slice=" + BATCH_SLICE):
                 assert control in text, (unit.name, control)
             assert "-m blueprint_pipeline.control_plane_state_backup run'" in text
-            # An unconfigured host skips the run rather than failing it every 15 minutes.
-            for name in ("encryption_key", "b2_bucket"):
-                condition = f"ConditionPathExists=/etc/blueprint/control-plane-backup/{name}\n"
-                assert condition in text and f"_FILE=/etc/blueprint/control-plane-backup/{name}\n" in text
+            # Nothing is installed by hand for a backup: it runs once the release carries the owner's public
+            # key and the host has the artifact store's bucket files, and is skipped (not failed) otherwise.
+            assert ("ConditionPathExists=/opt/blueprint/task-evaluation-control-plane/config/"
+                    "control_plane_state_backup_recipient.v1.json\n") in text
+            assert "ConditionPathExists=/etc/blueprint/provider-secrets/backblaze_b2_bucket\n" in text
+            for variable, name in (("ACCESS_KEY_ID", "key_id"), ("SECRET_ACCESS_KEY", "application_key"),
+                                   ("BUCKET", "bucket"), ("ENDPOINT_URL", "s3_endpoint_url"), ("REGION", "region")):
+                assert (f"Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_{variable}_FILE="
+                        f"/etc/blueprint/provider-secrets/backblaze_b2_{name}\n") in text
+            # The host holds no key that can read a backup.
+            assert "ENCRYPTION_KEY" not in text and "PRIVATE_KEY" not in text
+            assert "/etc/blueprint/control-plane-backup/" not in text
             continue
         if unit.name == WITHDRAWAL_DELETION_UNIT:
             # The withdrawal deletion pass: the service account (it writes beside files the intake and the workers

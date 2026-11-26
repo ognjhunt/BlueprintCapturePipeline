@@ -1,0 +1,10 @@
+{
+  "schema_version": "control_plane_state_backup_recipient.v1",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAmwCwXihGym5WZE3PGPBa\nehEuaqUkR6vk6X7ULD8t957p0ZHWBV3a507+lTmnBugvhEUtvCHxUhhp4ux3rMth\nF1S7yjHduXPijoTKRddqnQg40mF3DLUDJ4o0T4KENrOTs/mMqXDCImLzg92dHLyN\nB+MvB/XYc+g84Q+3iMFdE30IXD3CDnF5YIz9iI8xjVBuLQ014wsErt/KF8m6uqiw\nAwNEfFxidzNOS6KbkWVzSmLMJjjcfGeuq6Tl2B7heEcb799APZ+jA+vtIhykE3ms\nXW8n5uVArivqy1A7H+w6DCg0ujJX+LDhyAQE8Vzv9qT7CRiRTKiEkH7YtWDjCY0E\njNIbgvRyYxBPN2GAfin8V3ngBslIN5YcpnminPWfNpD5djtFVIMPK5Fr1iJydttp\niEz+7odCnXhf526fpGokFx4aCISNTNy5g7ZHQ2AMAF6aChGxUqabKKYSlf6lUKVO\nLx1eyGQJUVwvjmKs/qrZf5vYwtBhfbCl8zpGDujPjup4ml+Ni2CA8hovP6fH71Sy\nICJIaC0iwZEMMpI7F2u0KeSEPjzFHTCP8jwe1W+30kCk6N1ZI/8n6wcQFS7JJdAr\nVO6zsZSPR5ffwH/M6n/6bvgh1mNsCDNB1bxuk4TVAB4JX2NOXIe6Q4QWWgDyvDN+\n3CJCZH/+T5vPp1EhWsy/SyUCAwEAAQ==\n-----END PUBLIC KEY-----\n",
+  "fingerprint": "sha256:0cc6f1c59cbf645c25b88df29e975f4ab20e6d2f512c727a0ae14bd569e956b8",
+  "decision": {
+    "by": "owner",
+    "on": "2026-11-26",
+    "note": "Owner decision 2026-11-26: the control plane's state backup is sealed to this public key and stored under its own prefix of the B2 bucket the host already uses, so the host holds no backup secret and nobody installs one. The owner chose to have the key pair made in the session that made this change and keeps the private half; it is in no repository and on no host. To change the key, replace public_key_pem and fingerprint together in a reviewed commit: later generations are sealed to the new key, earlier ones still need the old one."
+  }
+}
