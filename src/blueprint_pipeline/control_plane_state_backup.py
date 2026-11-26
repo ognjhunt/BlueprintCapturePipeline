@@ -43,6 +43,7 @@ import base64
 import binascii
 import fnmatch
 import grp
+import gzip
 import hashlib
 import io
 import json
@@ -85,6 +86,8 @@ PART_BYTES = 8 * 1024 * 1024
 #: The fastest gzip level. The first run on the host (2026-11-26) packed 3.3 GB of records at tarfile's
 #: default, level 9, used 4.5 CPU minutes on them and stopped at its 10-minute bound with more to read.
 #: On JSON records level 1 packs about five times as much per CPU second for about a tenth more bytes.
+#: The stream is packed by ``gzip.GzipFile`` around a plain tar stream: ``tarfile`` takes a level for its
+#: own ``w|gz`` stream only from Python 3.12, and 3.11 is supported.
 GZIP_LEVEL = 1
 MAX_LIST_PAGES = 10_000
 _PART_MAGIC = b"BPB1"
@@ -939,7 +942,8 @@ def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site
     files: list[dict[str, Any]] = []
     status, reason = "complete", None
     try:
-        with tarfile.open(fileobj=writer, mode="w|gz", compresslevel=GZIP_LEVEL) as archive:
+        with gzip.GzipFile(fileobj=writer, mode="wb", compresslevel=GZIP_LEVEL, mtime=0) as packed, \
+                tarfile.open(fileobj=packed, mode="w|") as archive:
             for root in allowlist:
                 for entry in _walk(root, fs_root, stats):
                     archive.addfile(_tarinfo(entry), io.BytesIO(entry.data) if entry.kind == "file" else None)

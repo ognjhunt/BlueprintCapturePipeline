@@ -130,27 +130,19 @@ def test_a_restore_into_a_temporary_root_reproduces_the_backed_up_tree_byte_for_
     assert not (again / SITE / "captures").exists()
 
 
-def test_a_runs_reports_are_readable_like_the_ledger_and_the_stream_is_packed_fast(host, tmp_path, monkeypatch):
-    import tarfile
-
-    levels: list = []
-    real_open = tarfile.open
-
-    def recording_open(*args, **kwargs):
-        if kwargs.get("mode") == "w|gz":
-            levels.append(kwargs.get("compresslevel"))
-        return real_open(*args, **kwargs)
-
-    monkeypatch.setattr(backup.tarfile, "open", recording_open)
+def test_a_runs_reports_are_readable_like_the_ledger_and_the_stream_is_packed_fast(host, tmp_path):
     store = FakeStore()
     report = _run(host, store, tmp_path)
     assert report["status"] == "complete"
-    # The first run on the host packed at tarfile's default, level 9, and ran out of its time bound.
-    assert levels == [backup.GZIP_LEVEL] and backup.GZIP_LEVEL == 1
+    # The first run on the host packed at tarfile's default, level 9, and ran out of its time bound. The
+    # gzip header says how the stream was packed: its extra-flags byte is 4 for the fastest level, 2 for 9.
+    first = backup._open(KEY, store.get(f"{backup.KEY_PREFIX}{report['generation']}/part-000000.bin"),
+                         f"{report['generation']}:part:0")
+    assert first[:2] == b"\x1f\x8b" and first[8] == 4 and backup.GZIP_LEVEL == 1
     # An operator reads a run through the door, which is not root: the reports are readable, as the ledger is.
     for name in ("latest.json", "enabled_units.json", "ledger.json"):
         assert (tmp_path / "report" / name).stat().st_mode & 0o777 == 0o644, name
-    # A level-1 stream restores byte for byte.
+    # The stream restores byte for byte.
     drill = tmp_path / "drill"
     backup.restore(store=store, key=KEY, fs_root=drill)
     for relative, data in STATE.items():
