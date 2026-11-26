@@ -27,8 +27,11 @@ the job's object, each further object sure of a free source before the room is r
 (``further_removal``: a rigid shape that is not a can, beside a job's object that is moved, not opened), so compile
 builds each at no cost where the video shows it and composes it back (``website_further_objects``). Each is marked
 ``BUILT_EXTRA`` with its rank on the removal manifest (``apply_to_removal``), so every check of the job's one object
-still sees one. Every other object stays in the room as filmed, as before; one that needs the paid generated model
-stays there until stage 6 builds it. When the scene editor cannot take the further objects out with the job's object,
+still sees one. Stage 6: one that needs the paid generated model leaves the scan too, but only under its own admitted
+reservation inside the job's $40 (``website_build_budget.reserve_at_removal``), and is authored with ARTISAN at compile
+(``website_further_artisan``); refused at a limit on the job's paid work, it and each paid one ranked below it stay in
+the scan as filmed, and with no host that can author one (today's) nothing is reserved. Every other object stays in the
+room as filmed, as before. When the scene editor cannot take the further objects out with the job's object,
 the Atlas job erases the job's object alone, once, and every further object stays in the scan as filmed, named
 (``website_atlas_pipeline._erase_alone``): a further object never costs the job its object. A decision sealed under v2 keeps its route exactly: its first object alone is
 taken out. A job with one rigid object keeps today's route; its plan is recorded. The plan, in plain words, goes into
@@ -265,7 +268,8 @@ def further_removal(plan: Mapping[str, Any] | None, built: Sequence[Mapping[str,
     source then is (``website_extra_objects.free_before_reconstruction``), and only beside a job's object that is
     moved, not opened: pick and place is the only task the intake request takes further objects for. So nothing is
     erased that compile has no free way to bring back. Each other one stays in the scan as filmed, with the reason
-    composition gives it (``kept_in_scan_reason``): one that needs ARTISAN, for one, until stage 6 builds paid ones.
+    composition gives it (``kept_in_scan_reason``): one that needs ARTISAN, for one, unless the Atlas job then
+    reserves it (``website_build_budget.reserve_at_removal``, stage 6).
     ``entries``: the clean plate's removal manifest rows, as ``built_objects`` read them. Reads only."""
     from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECTS_FIELD, additional_objects_problem
     from .website_extra_objects import _opens, free_before_reconstruction

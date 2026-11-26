@@ -49,11 +49,22 @@ frozen cap leaves (``authoring_allocation``: the rule the first object's success
 has ended, its row settles at what it cost (``settle_object``: the existing OpenAI ``preparation-settlement``), never
 above the reservation; until then it holds its whole quote.
 
-The several-objects build calls ``admit_extra_objects`` with the objects it will build, only once the scene intake's
-allowance is held, so an extra object never competes with the first. It settles an extra object's ARTISAN usage through
-``settle_object`` only; a scene attempt's meter must never also record it. Today's route builds only the first object
-(``website_build_plan.built_object``), so it reserves nothing; the readers (``website_build_plan_notes``, the handoff)
-already name an object a limit kept out.
+Several objects per job, stage 6 (``reserve_at_removal``): a paid further object must be taken out of the scan before
+the room is reconstructed, which is before the scene intake's allowance is held, and only under its own admitted
+reservation, or else a refusal could not leave it in the scan. So the Atlas job reserves each one as it seals its
+job-object decision (``website_atlas_pipeline._build_plan``), in rank order, each reservation naming what the scored
+object still needs from the job's cap (``held_ahead_usd``: its scene intake's allowance, from the grant the capture runs
+under, and the scan's share left, from the Atlas configuration), which the WebApp counts beside the $12 and never holds.
+That is the guarantee the design's "once the scene intake is held" gives, given before the intake: a further object
+never takes the scored object's money. The figure is frozen once per job (``HOLD_AHEAD_RECORD``), so a run asking again
+asks with the same command. A WebApp that cannot count it refuses the field, and then nothing is reserved: that object
+and each paid one ranked below it stay in the scan as filmed, under the reason that claims no limit refused them. An
+admitted one is taken out of the scan with the job's object and authored with ARTISAN at compile, one at a time in rank
+order, under its own row (``website_further_artisan``); a refused one, and each paid one ranked below it, stays in the
+scan as filmed under ``spending_cap_reached``. None is reserved unless this host can author one
+(``website_further_artisan.installed``). Ranks are the intake request's (``website_build_plan.built_rank``): the scored
+object is 1, each further object 2 to 8. An extra object's ARTISAN usage settles through ``settle_object`` only; a scene
+attempt's meter never records it.
 """
 from __future__ import annotations
 
@@ -89,6 +100,13 @@ GENERATING_BACKENDS = frozenset({"artisan_v1", "astra_cad_blender_v1"})
 FIRST, FREE, ADMITTED, REFUSED = "first_object", "free", "admitted", "refused_at_cap"
 #: The WebApp row: ARTISAN's one OpenAI gate (``website_native_submission``: one reservation and one cap).
 RESOURCE_CLASS, PROVIDER = "openai_api_candidate", "openai"
+#: An object not reserved, kept in the scan as filmed under a reason that claims no limit refused it: the WebApp could
+#: not count the hold ahead (``HOLD_UNCONFIRMED``), or already holds the object's row with no record of it here.
+UNRESERVED = "not_reserved"
+HOLD_UNCONFIRMED = "website_build_budget_hold_ahead_unconfirmed"
+HELD_WITHOUT_RECORD = "website_build_budget_reservation_held_without_record"
+#: What the scored object still needs from the job's cap, frozen once per job beside the reservations.
+HOLD_AHEAD_SCHEMA, HOLD_AHEAD_RECORD = "website_build_budget_hold_ahead.v1", "hold_ahead.json"
 OBJECTS_INVALID = "website_build_budget_objects_invalid"
 RECORD_INVALID = "website_build_budget_record_invalid"
 SETTLEMENT_INVALID = "website_build_budget_settlement_invalid"
@@ -179,11 +197,13 @@ def _refusal(code: str) -> dict[str, Any]:
 
 
 def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context: Mapping[str, Any],
-             reserve: Callable[..., Any] | None, now: Callable[[], float]) -> dict[str, Any]:
+             reserve: Callable[..., Any] | None, now: Callable[[], float],
+             held_ahead_usd: float | None = None) -> dict[str, Any]:
     """Ask the job's ledger for the object's frozen ARTISAN cap: the admitted reservation, or the refusal at a limit on
     the job's paid work, kept with the website's code as received (the code after the transport's
     ``website_control_preparation-spend_http_409:``). Anything else is raised and writes nothing, unless the WebApp
-    already admitted the row: that stays written."""
+    already admitted the row: that stays written. With ``held_ahead_usd`` the request names what the scored object
+    still needs; a WebApp that does not parse it (``_http_400``: it wrote nothing) raises ``HOLD_UNCONFIRMED``."""
     from .task_object_authoring_backend import frozen_authoring_cap, new_authoring_budget
     if reserve is None:
         from .website_task_context import reserve_website_preparation_spend as reserve
@@ -198,8 +218,12 @@ def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context:
 
     try:
         reserve(task_context=task_context, binding_digest=digest, maximum_cost_usd=cap, request_count=1,
-                resource_class=RESOURCE_CLASS, provider=PROVIDER, retain_admission=retain)
+                resource_class=RESOURCE_CLASS, provider=PROVIDER, retain_admission=retain,
+                **({"held_ahead_usd": held_ahead_usd} if held_ahead_usd is not None else {}))
     except Exception as exc:
+        if (held_ahead_usd is not None and not os.path.lexists(path) and isinstance(exc, ValueError)
+                and "preparation-spend_http_400:" in str(exc)):
+            raise ValueError(HOLD_UNCONFIRMED) from exc
         if os.path.lexists(path) or not _at_cap(exc):
             raise
         return _write_once(path, {**base, "status": REFUSED, **_refusal(str(exc).rsplit(":", 1)[-1]),
@@ -234,24 +258,45 @@ def _recheck_retained(record: Mapping[str, Any], digest: str, task_context: Mapp
                                  allocation_binding_digest=digest)
 
 
+def _ranks(rows: Sequence[Mapping[str, Any]]) -> list[int]:
+    """Each object's rank as the intake request ranks it (``website_build_plan.built_rank``): its own ``rank`` where
+    the caller names one, else its position plus one. The first object is 1, the scored one; each later one is above
+    the one before it and at most 8. Anything else raises ``OBJECTS_INVALID``."""
+    from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECT_RANKS
+    from .website_build_plan import built_rank
+    ranks = [row.get("rank", built_rank(position)) for position, row in enumerate(rows)]
+    if (any(type(rank) is not int for rank in ranks) or ranks[0] != 1
+            or any(later <= earlier for earlier, later in zip(ranks, ranks[1:]))
+            or ranks[-1] > ADDITIONAL_OBJECT_RANKS[1]):
+        raise ValueError(OBJECTS_INVALID)
+    return ranks
+
+
 def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: Mapping[str, Any],
-                        build_plan_digest: str, root: Path, configurations: Mapping[str, Any],
+                        build_plan_digest: str, root: Path, configurations: Mapping[str, Any] | None = None,
+                        routes: Mapping[str, str] | None = None, held_ahead_usd: float | None = None,
                         reserve: Callable[..., Any] | None = None,
                         now: Callable[[], float] = time.time) -> dict[str, Any]:
     """Admit or refuse each extra paid object the build will build; returns the job's budget record, also written to
     ``root`` (``budget_root(capture_root)``, where the readers look).
 
     ``objects`` are the build plan's objects the build will build, in the plan's order, each as ``validate_plan`` kept
-    it (``target_id``, ``name``, ``sourcing``); ``build_plan_digest`` is the sealed plan's record digest, kept on the
-    record. ``configurations`` is compile's stage-3 configuration of each extra object, by its ``target_id``: what it
-    is built with (``route_of``) decides what it costs, never the plan's ``sourcing``. The first is the first object,
+    it (``target_id``, ``name``, ``sourcing``, and its ``rank`` where it is not its position plus one: ``_ranks``);
+    ``build_plan_digest`` is the sealed plan's record digest, kept on the record. What each extra object is built with
+    decides what it costs, never the plan's ``sourcing``: ``configurations`` is compile's stage-3 configuration of each,
+    by its ``target_id`` (``route_of``), and ``routes`` (in its place) the route decided before the room is
+    reconstructed (``reserve_at_removal``): ``library``, ``parametric`` or ``generate``. The first is the first object,
     under the scene intake's allowance as today: nothing is reserved for it here. Each later one is free (compile
     builds it from a library model or a parametric shape) or, built with ARTISAN, reserved on the job's ledger
     (``reserve``, by default ``reserve_website_preparation_spend``), unless a paid object ranked above it was refused
     at a limit on the job's paid work: then it is kept as filmed without asking, under that refusal's code. A refusal
     there keeps that object as filmed too, and is final. Any other failure is raised as the reservation raised it,
     after the objects before it were recorded in their reservations. A rerun, and a new plan, reuse every written
-    reservation and ask only for paid objects never asked. Call it only once the scene intake's allowance is held.
+    reservation and ask only for paid objects never asked. Call it only once the scene intake's allowance is held, or
+    with ``held_ahead_usd``: what the scored object still needs, which the WebApp counts beside each quote and never
+    holds. Then a WebApp that cannot count it (``HOLD_UNCONFIRMED``) leaves that object and each paid one below it
+    unreserved (``UNRESERVED``), and one whose row the WebApp holds with no record here (``HELD_WITHOUT_RECORD``) is
+    left unreserved alone: each stays in the scan as filmed, under a reason that claims no limit refused it.
     """
     rows = [dict(row) for row in objects if isinstance(row, Mapping)]
     try:
@@ -261,20 +306,32 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
     if (not rows or len(rows) != len(objects) or len(set(identities)) != len(identities)
             or any(row.get("sourcing") not in FREE_SOURCING | {PAID_SOURCING} for row in rows)
             or not isinstance(build_plan_digest, str) or not _DIGEST.fullmatch(build_plan_digest)
-            or not isinstance(configurations, Mapping)):
+            or (configurations is None) == (routes is None)
+            or not isinstance(configurations if routes is None else routes, Mapping)
+            or held_ahead_usd is not None and (isinstance(held_ahead_usd, bool)
+                                               or not isinstance(held_ahead_usd, (int, float))
+                                               or not math.isfinite(held_ahead_usd) or held_ahead_usd <= 0)):
         raise ValueError(OBJECTS_INVALID)
+    ranks = _ranks(rows)
     # What compile builds each extra object with, decided before anything is asked: library, parametric, or ARTISAN.
-    routes = {str(row["target_id"]): route_of(configurations.get(str(row["target_id"]))) for row in rows[1:]}
+    if routes is not None:
+        found = {str(row["target_id"]): routes.get(str(row["target_id"])) for row in rows[1:]}
+        if any(route not in FREE_SOURCING | {PAID_SOURCING} for route in found.values()):
+            raise ValueError(OBJECTS_INVALID)
+    else:
+        found = {str(row["target_id"]): route_of(configurations.get(str(row["target_id"]))) for row in rows[1:]}
+    routes = found
     root = Path(root)
 
     def named(rank: int, row: Mapping[str, Any]) -> dict[str, Any]:
         return {"rank": rank, "target_id": str(row["target_id"]), "name": str(row["name"]), "sourcing": row["sourcing"],
-                **({"route": routes[str(row["target_id"])]} if rank else {})}
+                **({"route": routes[str(row["target_id"])]} if rank > 1 else {})}
 
-    entries: list[dict[str, Any]] = [{**named(0, rows[0]), "status": FIRST}]
+    entries: list[dict[str, Any]] = [{**named(ranks[0], rows[0]), "status": FIRST}]
     with _locked(root):
         capped = None  # the refusal that keeps every later paid object as filmed, once there is one
-        for rank, row in enumerate(rows[1:], start=1):
+        unconfirmed = False  # the WebApp could not count the hold ahead: no later paid object is asked
+        for rank, row in zip(ranks[1:], rows[1:]):
             if routes[str(row["target_id"])] in FREE_SOURCING:
                 entries.append({**named(rank, row), "status": FREE})
                 continue
@@ -283,9 +340,21 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
             record = _read_reservation(root, digest)
             if record is not None and record["status"] == ADMITTED:
                 _recheck_retained(record, digest, task_context)
-            if record is None and capped is None:
-                record = _reserve(root=root, digest=digest, value=value, task_context=task_context, reserve=reserve,
-                                  now=now)
+            reason = HOLD_UNCONFIRMED if unconfirmed and record is None and capped is None else None
+            if record is None and capped is None and not unconfirmed:
+                try:
+                    record = _reserve(root=root, digest=digest, value=value, task_context=task_context,
+                                      reserve=reserve, now=now, held_ahead_usd=held_ahead_usd)
+                except Exception as exc:
+                    from .paid_resource_admission import PaidResourceAlreadyReserved
+                    if held_ahead_usd is None or not (str(exc) == HOLD_UNCONFIRMED
+                                                      or isinstance(exc, PaidResourceAlreadyReserved)):
+                        raise
+                    unconfirmed = str(exc) == HOLD_UNCONFIRMED
+                    reason = HOLD_UNCONFIRMED if unconfirmed else HELD_WITHOUT_RECORD
+            if reason is not None:
+                entries.append({**named(rank, row), "status": UNRESERVED, "reason": reason})
+                continue
             if record is not None and record["status"] == ADMITTED:
                 entries.append({**named(rank, row), "status": ADMITTED, "binding_digest": digest,
                                 "maximum_cost_usd": record["maximum_cost_usd"],
@@ -300,12 +369,150 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
         budget = {"schema_version": BUDGET_SCHEMA, "revision": REVISION, "request_id": str(task_context["request_id"]),
                   "build_plan_digest": build_plan_digest, "objects": entries, "kept_at_cap": kept,
                   **({"flags": [SPENDING_CAP_REACHED]} if kept else {}),
+                  **({"held_ahead_usd": held_ahead_usd} if held_ahead_usd is not None else {}),
                   "claim_boundary": "Reservations inside the job's limits on paid work, in the plan's order; a refusal "
                                     "names the website's code, which covers the dollar cap and the paid-request count "
                                     "alike, never which one. No object is built by this record."}
         budget["digest"] = canonical_digest(budget, digest_field="digest")
         write_json(root / BUDGET_RECORD, budget)
     return budget
+
+
+#: Why a further object needs ARTISAN before the room is reconstructed (``website_extra_objects``) that one rigid
+#: generated model answers: no free shape for it, or a can that may miss its size. One that opens never is one: a further
+#: object is composed as one rigid body, so it stays in the scan as filmed, as before.
+PAID_AT_REMOVAL = ("website_extra_object_no_free_source", "website_extra_object_cylinder_can_miss_size_tolerance")
+
+
+def _positive(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
+def scored_object_needs(*, capture_root: Path, task_context: Mapping[str, Any],
+                        source_digest: str | None) -> dict[str, Any] | None:
+    """What the scored object still needs from the job's cap before the room is reconstructed: its scene intake's
+    allowance, from the grant the capture runs under (``website_task_context.RETAINED_GRANT_FILE``: the figure its intake
+    request names and the WebApp holds in full), and the scan's share left, from the Atlas configuration (what the
+    Pipeline still plans Atlas purchases within, never more than the job has left), or None when either cannot be read:
+    then nothing is reserved. Reads only; creates no grant."""
+    from .website_task_context import RETAINED_GRANT_FILE, load_atlas_configuration
+    if not isinstance(source_digest, str) or not _DIGEST.fullmatch(source_digest):
+        return None
+    try:
+        grant = json.loads((Path(capture_root) / RETAINED_GRANT_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(grant, Mapping) or grant.get("schema_version") != "website_scene_sponsorship.v1"
+            or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
+            or any(grant.get(key) != task_context.get(key) for key in ("request_id", "scene_id", "capture_id"))
+            or not _positive(grant.get("max_total_spend_usd"))):
+        return None
+    left = load_atlas_configuration(task_context, source_digest, create=False).get("remaining_cost_usd")
+    if isinstance(left, bool) or not isinstance(left, (int, float)) or not math.isfinite(left) or left < 0:
+        return None
+    allowance = float(grant["max_total_spend_usd"])
+    return {"scene_allowance_usd": allowance, "scan_share_left_usd": float(left),
+            "held_ahead_usd": round(allowance + float(left), 6)}
+
+
+def _hold_ahead(root: Path, *, capture_root: Path, task_context: Mapping[str, Any], source_digest: str | None,
+                now: Callable[[], float]) -> float | None:
+    """The job's hold ahead, read once (``scored_object_needs``) and frozen beside its reservations, so each run asks
+    with the same command: the WebApp then answers a row it holds with that row, never a conflict. None when it cannot
+    be read; one written that does not seal itself raises (money fails closed)."""
+    path = Path(root) / HOLD_AHEAD_RECORD
+    if os.path.lexists(path):
+        try:
+            record = None if path.is_symlink() else json.loads(path.read_text())
+        except (OSError, ValueError):
+            record = None
+        if (not isinstance(record, Mapping) or record.get("schema_version") != HOLD_AHEAD_SCHEMA
+                or record.get("request_id") != str(task_context["request_id"])
+                or not _positive(record.get("held_ahead_usd"))
+                or record.get("digest") != canonical_digest(record, digest_field="digest")):
+            raise ValueError(RECORD_INVALID)
+        return float(record["held_ahead_usd"])
+    needs = scored_object_needs(capture_root=capture_root, task_context=task_context, source_digest=source_digest)
+    if needs is None:
+        return None
+    _write_once(path, {"schema_version": HOLD_AHEAD_SCHEMA, "request_id": str(task_context["request_id"]), **needs,
+                       "recorded_at_epoch": now(),
+                       "claim_boundary": "What the job's scored object may still need from its cap, counted beside "
+                                         "each further object's reservation and never held; not a cost."})
+    return needs["held_ahead_usd"]
+
+
+def reserve_at_removal(further: Sequence[Mapping[str, Any]], *, built: Sequence[Mapping[str, Any]],
+                       plan: Mapping[str, Any], task_context: Mapping[str, Any], atlas_root: Path,
+                       source_digest: str | None, now: Callable[[], float] = time.time) -> list[dict[str, Any]]:
+    """The further objects of a decision being sealed (``website_build_plan.further_removal``), with each paid one
+    (``PAID_AT_REMOVAL``) reserved before the room is reconstructed, in rank order (``admit_extra_objects``, with the
+    hold ahead): admitted, it is taken out of the scan with the job's object (``removed``, its ``paid`` reservation
+    named) to be authored with ARTISAN at compile; refused at a limit on the job's paid work, it and each paid one ranked
+    below it stay in the scan as filmed under ``spending_cap_reached``; not reserved (``UNRESERVED``), it stays as it
+    was. ``built`` is ``built_objects``' list, the scored object first; ``plan`` the plan record; ``atlas_root`` the
+    Atlas job's ``pipeline/atlas``. The rows come back unchanged, and nothing is asked or written, without a paid one,
+    when this host cannot author one (``website_further_artisan.installed``) or when the hold ahead cannot be read; a
+    privacy or rights stop reading it is raised. Any other refusal is raised as the reservation raised it (a wait)."""
+    from .hard_stops import wall_kind
+    from .job_retry_policy import PRIVACY_RIGHTS
+    from .website_further_artisan import installed
+    from .website_further_objects import NEEDS_ARTISAN
+
+    def paid(row: Mapping[str, Any]) -> bool:
+        head, _, detail = str(row.get("kept_in_scan_reason") or "").partition(":")
+        return row.get("removed") is False and head == NEEDS_ARTISAN and detail in PAID_AT_REMOVAL
+    rows = [dict(row) for row in further]
+    if not any(paid(row) for row in rows) or not built or not installed():
+        return rows
+    capture_root = Path(atlas_root).parent.parent
+    root = budget_root(capture_root)
+    try:
+        with _locked(root):
+            held = _hold_ahead(root, capture_root=capture_root, task_context=task_context,
+                               source_digest=source_digest, now=now)
+    except Exception as exc:  # noqa: BLE001 - a hold ahead that cannot be read reserves nothing, never a stop
+        if wall_kind(exc) == PRIVACY_RIGHTS or str(exc) == RECORD_INVALID:
+            raise
+        held = None
+    if held is None:
+        return rows
+    by_target = {str(row["target_id"]): row for row in built}
+    taken = [row for row in rows if row.get("removed") is True or paid(row)]
+    objects = [built[0], *({**by_target[row["target_id"]], "rank": row["rank"]} for row in taken)]
+    routes = {row["target_id"]: PAID_SOURCING if paid(row) else "parametric" for row in taken}
+    record = admit_extra_objects(objects, task_context=task_context, build_plan_digest=plan["digest"], root=root,
+                                 routes=routes, held_ahead_usd=held, now=now)
+    outcome = {row["target_id"]: row for row in record["objects"][1:]}
+    found = []
+    for row in rows:
+        entry = outcome.get(row["target_id"]) if paid(row) else None
+        if entry is None or entry["status"] == UNRESERVED:
+            found.append(row)
+            continue
+        base = {key: value for key, value in row.items() if key != "kept_in_scan_reason"}
+        found.append({**base, "removed": True, "paid": {"binding_digest": entry["binding_digest"],
+                                                       "maximum_cost_usd": entry["maximum_cost_usd"]}}
+                     if entry["status"] == ADMITTED else
+                     {**base, "removed": False, "kept_in_scan_reason": SPENDING_CAP_REACHED})
+    return found
+
+
+def admitted_reservation(root: Path, binding_digest: str) -> dict[str, Any] | None:
+    """The object's written reservation when it was admitted, else None; one that does not seal itself raises."""
+    record = _read_reservation(Path(root), binding_digest)
+    return record if record is not None and record["status"] == ADMITTED else None
+
+
+def settlement(root: Path, binding_digest: str) -> dict[str, Any] | None:
+    """The object's kept settlement receipt (``settle_object``), or None while its row holds its whole quote."""
+    kept = _path(Path(root), binding_digest, ".settlement.json")
+    if not kept.is_file():
+        return None
+    receipt = json.loads(kept.read_text())
+    if receipt.get("allocation_binding_digest") != binding_digest or receipt.get("status") != "settled":
+        raise ValueError(SETTLEMENT_INVALID)
+    return receipt
 
 
 def authoring_allocation(entry: Mapping[str, Any], carried: Mapping[str, Any] | None) -> float:
@@ -362,6 +569,7 @@ def settle_object(*, binding_digest: str, task_context: Mapping[str, Any], root:
         return receipt
 
 
-__all__ = ["ADMITTED", "FIRST", "FREE", "FREE_SOURCING", "GENERATING_BACKENDS", "KEPT", "PAID_SOURCING", "REFUSED",
-           "admit_extra_objects", "authoring_allocation", "budget_root", "reservation_binding", "route_of",
-           "settle_object"]
+__all__ = ["ADMITTED", "FIRST", "FREE", "FREE_SOURCING", "GENERATING_BACKENDS", "HELD_WITHOUT_RECORD",
+           "HOLD_AHEAD_RECORD", "HOLD_UNCONFIRMED", "KEPT", "PAID_AT_REMOVAL", "PAID_SOURCING", "REFUSED", "UNRESERVED",
+           "admit_extra_objects", "admitted_reservation", "authoring_allocation", "budget_root", "reservation_binding",
+           "reserve_at_removal", "route_of", "scored_object_needs", "settle_object", "settlement"]

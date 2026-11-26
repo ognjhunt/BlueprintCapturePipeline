@@ -29,7 +29,10 @@ those into objects of the job's scene, beside the scored one:
   from the preparation the half's revision was built from; ``refused_rows_dropped``: a packet writer that refuses the
   extra rows has them dropped, flagged ``further_objects_left_out``, and the half goes on.
 
-A further object the decision kept in the scan (one that needs ARTISAN, the paid generated model, until stage 6) is
+A paid further object (one that needs ARTISAN, the paid generated model) the decision reserved on its own row of the
+job's ledger and took out of the scan (stage 6) is placed as a free one is and authored with ARTISAN under that
+reservation alone, then settled at what it cost (``website_further_artisan``). A further object the decision kept in
+the scan (one that needs ARTISAN where no reservation was made, or one a limit on the job's paid work refused) is
 left in the scan as filmed: named with its reason on the record (``left_in_scan``) and flagged
 ``scene_estimate:further_object_left_in_scan``. One taken out of the scan (its removal manifest row ``BUILT_EXTRA``)
 that has no track, no registered scene or no surface under it, that overlaps the scored object, its destination or
@@ -37,8 +40,8 @@ another further object, whose authoring or static check fails, or that the reque
 scan nor the simulation: named with its reason (``removed_not_built``) and flagged
 ``scene_estimate:further_object_removed_not_built``, never said to be in the scan. Neither is ever a stop. Only
 privacy, rights and money stop a job: a library model whose rights cannot be confirmed now is never used. Nothing here
-reserves, spends, asks a model or fetches beyond what the library step already pinned. The success rule still scores
-only the scored object (``scene_package_stage``).
+reserves, asks a model or fetches beyond what the library step already pinned; a paid object spends only under the
+reservation the Atlas job made for it. The success rule still scores only the scored object (``scene_package_stage``).
 """
 from __future__ import annotations
 
@@ -123,14 +126,17 @@ def further_inputs(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[
 
 def sealed_inputs(decided: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
                   task_context: Mapping[str, Any], library_root: Path,
-                  catalog_entries: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+                  catalog_entries: Sequence[Mapping[str, Any]] | None = None,
+                  budget_root: Path | None = None) -> list[dict[str, Any]]:
     """Compile's ``further_objects`` for a decision sealed under v3 (``website_build_plan_notes.further_rows``), else
     none. ``further_inputs`` is read as the decision read the plan: the editor's rows of the objects it would build and
     the clean plate's own ``entries`` (before the handoff marks them), one row per further object the decision names,
     by the rank it sealed. One it took out of the scan comes with its free source; one it kept in the scan is marked
     ``NOT_BUILT`` with the reason it sealed, so composition never builds an object still in the scan; one taken out
     that is no longer read as it was (another rank, no row, a fault reading it) is marked ``NOT_BUILT`` too
-    (``INPUT_INVALID``, ``FAILED``). Reads only; never a stop of the job."""
+    (``INPUT_INVALID``, ``FAILED``). A paid one the decision reserved (stage 6, ``website_build_budget.reserve_at_removal``)
+    carries its reservation (``paid``, with ``budget_root``, the job's build budget), built or not, so compile authors it
+    under that reservation alone and settles it either way (``website_further_artisan``). Reads only; never a stop."""
     from .hard_stops import PRIVACY_RIGHTS, wall_kind
     from .website_build_plan_notes import further_rows
     sealed = further_rows(decided)
@@ -151,12 +157,14 @@ def sealed_inputs(decided: Mapping[str, Any] | None, *, entries: Sequence[Mappin
     for row in sealed:
         named = {"rank": row["rank"], "target_id": row["target_id"], "name": row.get("name")}
         item = read.get(row["target_id"])
+        paid = ({"paid": {**row["paid"], "budget_root": str(budget_root)}}
+                if isinstance(row.get("paid"), Mapping) and budget_root is not None else {})
         if row.get("removed") is not True:
-            found.append({**named, NOT_BUILT: str(row.get("kept_in_scan_reason") or INPUT_INVALID)})
+            found.append({**named, NOT_BUILT: str(row.get("kept_in_scan_reason") or INPUT_INVALID), **paid})
         elif item is None or item.get("rank") != row["rank"]:
-            found.append({**named, NOT_BUILT: failed or INPUT_INVALID})
+            found.append({**named, NOT_BUILT: failed or INPUT_INVALID, **paid})
         else:
-            found.append(dict(item))
+            found.append({**item, **paid})
     return found
 
 
@@ -387,7 +395,8 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
           targets: Mapping[str, Mapping[str, Any]], frames: Sequence[Mapping[str, Any]], matrix: Any,
           runtime_to_sim: Any, residual: float | None, collider: Any, up: int, up_sign: int, mpu: float,
           scored: tuple[Sequence[float], Sequence[float]], destination: Mapping[str, Any] | None, strategy: str,
-          origin: str, tolerance: float, output_root: Path) -> dict[str, Any]:
+          origin: str, tolerance: float, output_root: Path,
+          task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Each further object placed and authored (``objects``), each one not built with why (``left_in_scan``; marked
     for ``compose`` when its removal manifest row says it was taken out of the scan, ``BUILT_EXTRA``), and the records
     the intake request names (``requested``, ``website_preparation_request.additional_objects``). A row marked
@@ -395,7 +404,13 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
 
     ``scored``: the scored object's box at its start (runtime units), ``destination`` its destination (simulator frame);
     ``matrix``, ``runtime_to_sim``, ``residual``, ``up``, ``up_sign`` and ``mpu`` are compile's own registration and
-    frame, and ``collider`` the sealed collider it placed the scored object on (None without a registered scene)."""
+    frame, and ``collider`` the sealed collider it placed the scored object on (None without a registered scene).
+
+    A paid further object (its row's ``paid`` reservation, stage 6) is placed as a free one is and authored with ARTISAN
+    under that reservation alone (``website_further_artisan.author``, with ``task_context``), one at a time in rank
+    order; whatever becomes of it, its reservation is settled at what its authoring cost, released when nothing was
+    spent (``close``). A privacy or rights stop on its path is raised; any other refusal (the account's month among
+    them) leaves that object not built, never the scored one."""
     rows = _rows(further_objects)
     empty: dict[str, Any] = {"objects": [], "left_in_scan": [], "requested": []}
     if not rows:
@@ -410,6 +425,7 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
     problem = _problem(rows, strategy=strategy, origin=origin)
     if problem is not None:
         reason = problem if problem == INPUT_INVALID else "scene_intake_" + problem
+        _close_paid(rows, task_context)
         return {**empty, "left_in_scan": [unbuilt(row, row.get(NOT_BUILT) or reason) for row in rows]}
     from .website_support_geometry import nearest_support_under, support_under
     from .website_task_masks import estimate_target_bounds
@@ -426,7 +442,7 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
         target = targets.get(target_id)
         if row.get(NOT_BUILT):
             return None, str(row[NOT_BUILT])
-        if row.get("source") not in (LIBRARY, PARAMETRIC):
+        if row.get("source") not in (LIBRARY, PARAMETRIC) and not isinstance(row.get("paid"), Mapping):
             return None, NEEDS_ARTISAN + ":" + str((row.get("needs_artisan") or {}).get("reason") or "")
         if collider is None:
             return None, NO_SCENE
@@ -450,8 +466,14 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
             return None, f"{OVERLAPS}:{met}"
         dimensions = [sim_max[i] - sim_min[i] for i in range(3)]
         folder = Path(output_root) / DIRECTORY / f"rank-{rank:02d}"
-        authored, why = author(row, dimensions=dimensions, tolerance=tolerance,
-                               physics_bounds=screen_physics(dimensions)["bounds"], output_root=folder)
+        if row.get("source") in (LIBRARY, PARAMETRIC):
+            authored, why = author(row, dimensions=dimensions, tolerance=tolerance,
+                                   physics_bounds=screen_physics(dimensions)["bounds"], output_root=folder)
+        else:  # its own reservation's ARTISAN run (stage 6)
+            from .website_further_artisan import author as generate
+            authored, why = generate(row, dimensions=dimensions, tolerance=tolerance,
+                                     physics_bounds=screen_physics(dimensions)["bounds"], task_context=task_context,
+                                     target=target, frames=frames, output_root=folder)
         if authored is None:
             return None, why
         failed = static_check(authored["path"], dimensions_m=dimensions, tolerance=tolerance)
@@ -473,18 +495,38 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
                             "snap_m": snap * mpu, "snap_basis": "estimate",
                             "seated_on": "authored_asset_bottom", "asset_bottom_m": seated["asset_bottom_m"]}}, None
 
+    from .hard_stops import wall_kind
+    from .job_retry_policy import PRIVACY_RIGHTS
     for row in sorted(rows, key=lambda item: item["rank"]):
         try:
             item, why = one(row)
         except Exception as exc:  # noqa: BLE001 - a further object never stops the scored object's job
+            if isinstance(row.get("paid"), Mapping) and wall_kind(exc) == PRIVACY_RIGHTS:
+                raise  # the site withdrew, or its rights changed: nothing more is sent, its hold kept
             item, why = None, f"{FAILED}:{type(exc).__name__}"
         if item is None:
             left.append(unbuilt(row, str(why)))
         else:
             placed.append(item)
+    _close_paid(rows, task_context)
     requested = [{"rank": item["rank"], "entry": item["entry"], "aabb_min": item["sim_min"], "aabb_max": item["sim_max"],
                   "origin": origin, "complete": False} for item in placed]
     return {"objects": placed, "left_in_scan": left, "requested": requested}
+
+
+def _close_paid(rows: Sequence[Mapping[str, Any]], task_context: Mapping[str, Any] | None) -> None:
+    """Settle each paid further object's reservation once compile decided on it (``website_further_artisan.close``):
+    an authored one already is; any other at what its authoring spent, $0 when none started. One that cannot be settled
+    now keeps its whole hold (over, never under) and is settled by a later pass; never a stop."""
+    if task_context is None:
+        return
+    from .website_further_artisan import close
+    for row in rows:
+        if isinstance(row.get("paid"), Mapping):
+            try:
+                close(row["paid"], task_context=task_context)
+            except Exception:  # noqa: BLE001 - an unsettled row keeps its whole quote
+                continue
 
 
 def runtime_id(replacement: str) -> str:
@@ -526,7 +568,8 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
             "runtime_name": f"{ROLE}_{slot:02d}", "replacement_asset_id": replacement_id(task_context, item["rank"]),
             "runtime_asset_id": runtime_id(replacement_id(task_context, item["rank"])), "source": authored["source"],
             **({"library_design": authored["library_design"]} if authored["source"] == LIBRARY else
-               {"parametric_design": authored["parametric_design"]}),
+               {"parametric_design": authored["parametric_design"]} if authored["source"] == PARAMETRIC else
+               {"artisan_authoring": authored["artisan_authoring"]}),
             **({"library_not_used": authored["library_not_used"]} if "library_not_used" in authored else {}),
             "asset": {"relative_path": Path(authored["path"]).resolve().relative_to(Path(output_root).resolve()).as_posix(),
                       "sha256": "sha256:" + receipt["asset"]["sha256"], "size_bytes": receipt["asset"]["size_bytes"]},

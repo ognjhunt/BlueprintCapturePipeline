@@ -141,7 +141,9 @@ def test_each_extra_paid_object_reserves_its_own_share_in_the_plans_order_until_
     # Nothing spends past the cap: the carton's $12 fills it exactly.
     assert ledger.total_micros() == 40_000_000
     crate, drill = record["objects"][3], record["objects"][5]
-    assert crate == {"rank": 3, "target_id": "crate", "name": "crate", "sourcing": "generate", "route": "generate",
+    # Ranked as the intake request ranks them (``website_build_plan.built_rank``): the scored object 1, then 2 to 8.
+    assert [row["rank"] for row in record["objects"]] == [1, 2, 3, 4, 5, 6]
+    assert crate == {"rank": 4, "target_id": "crate", "name": "crate", "sourcing": "generate", "route": "generate",
                      "status": budget.KEPT,
                      "reason": SPENDING_CAP_REACHED, "refused": True, "binding_digest": _binding("crate"),
                      "refusal_code": JOB_SPEND_CAP, "refusal_code_means_one_of": ["job_dollar_cap", "paid_request_count"]}
@@ -415,8 +417,8 @@ def test_the_handoff_discloses_each_object_the_cap_kept_out(tmp_path, monkeypatc
                "built": {"target_id": "cup-1", "name": "cup", "sourcing": "generate", "editor_object_ids": ["e"]},
                "kept_in_scan_target_ids": ["cup-2"]}
     kept = {"schema_version": "website_build_budget.v1", "build_plan_digest": PLAN_DIGEST, "objects": [
-        {"rank": 0, "name": "cup", "status": budget.FIRST},
-        {"rank": 1, "name": "second cup", "status": budget.KEPT, "reason": SPENDING_CAP_REACHED,
+        {"rank": 1, "name": "cup", "status": budget.FIRST},
+        {"rank": 2, "name": "second cup", "status": budget.KEPT, "reason": SPENDING_CAP_REACHED,
          "refusal_code": JOB_SPEND_CAP, "refusal_code_means_one_of": list(REFUSAL_CODE_MEANS_ONE_OF)}]}
     monkeypatch.setattr(website_build_plan, "sealed_decision", lambda _root: decided)
     monkeypatch.setattr(website_build_plan_notes, "sealed_budget", lambda _root: kept)

@@ -645,6 +645,9 @@ def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation,
              else [])
     built = every[0] if every else None
     further = further_removal(record.get("plan"), every, entries=entries)
+    from .website_build_budget import reserve_at_removal  # stage 6: a paid one leaves the scan only under its own row
+    further = reserve_at_removal(further, built=every, plan=record, task_context=task_context, atlas_root=output_root,
+                                 source_digest=source_digest)
     taken = {row["target_id"] for row in further if row["removed"]}
     kept = sorted(str(row.get("target_id")) for row in entries if row.get("task_effect") == "manipulated" and built
                   and row.get("target_id") != built["target_id"] and row.get("target_id") not in taken)
