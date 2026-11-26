@@ -1,13 +1,14 @@
 """The free source each object the build plan would build after its first could use: a record, and nothing more.
 
-A job builds one object today, the build plan's most important one it can build (``website_build_plan.built_object``).
-The plan ranks up to eight, and ``built_objects`` lists every one it would build, top-ranked first. For each object
-after the first, ``extra_object_sources`` works out the free source it could use, in the owner's order (owner
-direction 2026-11-23): an existing licensed library model first, then a free parametric shape. Anything else needs the
-paid generated model (ARTISAN, at its per-object cap: $12 today). It reserves nothing, spends nothing, asks no model
-and fetches nothing: it reads the library pick sealed for that object in a directory of its own target
-(``object_root``: several objects' picks never share one record) and the plan's row. Nothing on the live path calls
-it yet; every job still builds its first object alone.
+The build plan ranks up to eight objects, and ``website_build_plan.built_objects`` lists every one it would build,
+top-ranked first: the first is the job's own object. For each object after the first, ``extra_object_sources`` works
+out the free source it could use, in the owner's order (owner direction 2026-11-23): an existing licensed library
+model first, then a free parametric shape. Anything else needs the paid generated model (ARTISAN, at its per-object
+cap: $12 today). It reserves nothing, spends nothing, asks no model and fetches nothing: it reads the library pick
+sealed for that object in a directory of its own target (``object_root``: several objects' picks never share one
+record) and the plan's row. A decision sealed under v3 takes out of the scan, before the room is reconstructed, only
+the further objects sure of a free source then (``free_before_reconstruction``); compile reads this record for those
+(``website_further_objects.further_inputs``).
 
 An extra object counts as free only when it has either
 
@@ -94,6 +95,17 @@ def _opens(row: Mapping[str, Any], entry: Mapping[str, Any] | None) -> bool:
             or entry.get("articulation_kind") in ("prismatic", "revolute"))
 
 
+def free_before_reconstruction(row: Mapping[str, Any], entry: Mapping[str, Any] | None) -> str | None:
+    """Why an extra object is not sure of a free source before the room is reconstructed, or None when it is: a rigid
+    object that does not open, with a parametric shape that is not a cylinder, is free whatever library model is
+    picked for it later (``free_source``: that model, else its shape). Any other is free only with a library model
+    picked for it, not known yet, or needs ARTISAN: ``OPENS``, ``CYLINDER_ONLY`` or ``NO_FREE_SOURCE``, as
+    ``free_source`` reads it without a model. Reads only."""
+    shape = row.get("parametric_shape") if row.get("parametric_shape") in SHAPES else None
+    return OPENS if _opens(row, entry) else NO_FREE_SOURCE if shape is None else CYLINDER_ONLY if shape == CYLINDER \
+        else None
+
+
 def free_source(row: Mapping[str, Any], *, entry: Mapping[str, Any] | None, root: Path,
                 task_context: Mapping[str, Any], artisan_cap_usd: float,
                 catalog_entries: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
@@ -157,5 +169,5 @@ def extra_object_sources(plan: Mapping[str, Any] | None, *, entries: Sequence[Ma
 
 
 __all__ = ["ARTISAN", "CYLINDER_FALLBACK", "CYLINDER_ONLY", "LIBRARY", "LIBRARY_WITHOUT_FALLBACK", "NO_FREE_SOURCE",
-           "NOT_PICKED", "OPENS", "PARAMETRIC", "extra_object_sources", "free_source", "object_root",
-           "sealed_library_model"]
+           "NOT_PICKED", "OPENS", "PARAMETRIC", "extra_object_sources", "free_before_reconstruction", "free_source",
+           "object_root", "sealed_library_model"]

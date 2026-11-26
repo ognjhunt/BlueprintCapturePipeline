@@ -89,8 +89,9 @@ LABELS = {"cup-1": "cup", "carton-1": "carton", "mug-1": "mug box", "static-1": 
 
 
 def _job(root: Path, names: list[str]) -> dict:
-    """The compile's arguments for the cup and the further objects ``names``, each removed before reconstruction (as
-    stage 5 will remove every built object); ``overlap-1`` is filmed where the cup is."""
+    """The compile's arguments for the cup and the further objects ``names``, each named by the clean plate as an
+    object the job moves (stage 3's inputs: stage 5 marks the ones it takes out of the scan ``built_extra``,
+    ``tests/test_website_further_objects_removal.py``); ``overlap-1`` is filmed where the cup is."""
     root.mkdir(parents=True, exist_ok=True)
     frames = [_frame(root, index) for index in range(2)]
     geometry = {"schema_version": "website_source_geometry.v1", "frames": frames, "unit": "estimated_meters",

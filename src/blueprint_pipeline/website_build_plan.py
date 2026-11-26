@@ -18,13 +18,23 @@ alone, never the whole plan; no plan at all leaves the job on today's route.
 What it changes today (``built_object``): a job whose analysis names several objects, or one it read as soft, kept
 every one in the scan as filmed (``website_atlas_pipeline.job_object_review``). With a plan, the most important object
 it can build (a rigid or opening object the job moves, named by the analysis, with the editor's rows that show it) is
-taken out of the scan alone and built as the job's object (``partial_review``); every other object stays in the room
-as filmed (``apply_to_removal``). ``built_objects`` lists every object the plan could build that way, in its order:
-the first is the one built, and the others are only recorded, each with the free source it could use
-(``website_extra_objects``). A job with one rigid object keeps today's route; its plan is recorded. The plan, in plain
-words, goes into the company's README (``build_plan_notes``): what it needs, the object it takes out of the scan to
-build, what it keeps as filmed, what the video does not show. Never a claim that an object was built: the package's own
-notes say whether it was prepared.
+taken out of the scan and built as the job's object, the one the success rule scores (``partial_review``).
+``built_objects`` lists every object the plan could build that way, in its order: the first is the job's object, and
+each after it a further object, ranked as the intake request ranks it (``built_rank``).
+
+Several objects per job, stage 5: a decision sealed under v3 (``DECISION_SCHEMA``) also takes out of the scan, with
+the job's object, each further object sure of a free source before the room is reconstructed
+(``further_removal``: a rigid shape that is not a can, beside a job's object that is moved, not opened), so compile
+builds each at no cost where the video shows it and composes it back (``website_further_objects``). Each is marked
+``BUILT_EXTRA`` with its rank on the removal manifest (``apply_to_removal``), so every check of the job's one object
+still sees one. Every other object stays in the room as filmed, as before; one that needs the paid generated model
+stays there until stage 6 builds it. When the scene editor cannot take the further objects out with the job's object,
+the Atlas job erases the job's object alone, once, and every further object stays in the scan as filmed, named
+(``website_atlas_pipeline._erase_alone``): a further object never costs the job its object. A decision sealed under v2 keeps its route exactly: its first object alone is
+taken out. A job with one rigid object keeps today's route; its plan is recorded. The plan, in plain words, goes into
+the company's README (``build_plan_notes``): what it needs, the objects it takes out of the scan to build, what it
+keeps as filmed, what the video does not show. Never a claim that an object was built: the package's own notes say
+whether it was prepared.
 """
 from __future__ import annotations
 
@@ -36,7 +46,8 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .website_parametric_object import SHAPES as PARAMETRIC_SHAPES
-from .website_build_plan_notes import DECISION_SCHEMA, NOT_IN_VIDEO, build_plan_notes, plan_notes, sealed_decision
+from .website_build_plan_notes import (DECISION_SCHEMA, NOT_IN_VIDEO, build_plan_notes, further_rows, plan_notes,
+                                       sealed_decision)
 
 SCHEMA_VERSION = "website_build_plan.v1"
 REVISION = "website_build_plan.r1"
@@ -52,6 +63,11 @@ MASS_BOUNDS_KG = (0.001, 2000.0)
 #: The scene editor's instruction when it erases the plan's one object and keeps the rest (as the owner-selected
 #: correction does, ``website_target_background_correction``).
 PARTIAL_REMOVAL_INSTRUCTION = "Remove only the object inside the supplied source masks; preserve other objects."
+#: The same, when a decision sealed under v3 erases the job's object and further objects with it.
+PARTIAL_REMOVAL_INSTRUCTION_SEVERAL = "Remove only the objects inside the supplied source masks; preserve other objects."
+#: A further object taken out of the scan with the job's object, to be built on its own, on the removal manifest
+#: (``apply_to_removal``): no longer ``manipulated``, so every check of the job's one object sees one.
+BUILT_EXTRA = "built_extra"
 #: Fallback codes, recorded; none of them stops the job.
 INVALID = "website_build_plan_invalid"
 INCOMPLETE = "website_build_plan_incomplete"
@@ -222,7 +238,7 @@ def _buildable(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str,
 def built_objects(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
                   editor_objects: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Every object the plan would build, ranked as the plan ranks them, its most important first (``_buildable``).
-    Only the first is built today (``built_object``); the rest stay in the room as filmed, recorded."""
+    The first is the job's object (``built_object``); which of the rest are built is ``further_removal``'s."""
     return list(_buildable(plan, entries=entries, editor_objects=editor_objects))
 
 
@@ -241,13 +257,53 @@ def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[st
     return next(_buildable(plan, entries=entries, editor_objects=editor_objects), None)
 
 
-def partial_review(review: Mapping[str, Any], editor_object_ids: Sequence[str]) -> dict[str, Any]:
-    """The scene editor's plan erasing only ``editor_object_ids`` and keeping every other object as filmed."""
+def further_removal(plan: Mapping[str, Any] | None, built: Sequence[Mapping[str, Any]], *,
+                    entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """For a decision sealed under v3: each further object the plan would build (``built``, as ``built_objects``
+    lists them, after the job's object), by rank (``built_rank``), and whether it is taken out of the scan with the
+    job's object, before the room is reconstructed, to be built on its own (``removed``). Only one sure of a free
+    source then is (``website_extra_objects.free_before_reconstruction``), and only beside a job's object that is
+    moved, not opened: pick and place is the only task the intake request takes further objects for. So nothing is
+    erased that compile has no free way to bring back. Each other one stays in the scan as filmed, with the reason
+    composition gives it (``kept_in_scan_reason``): one that needs ARTISAN, for one, until stage 6 builds paid ones.
+    ``entries``: the clean plate's removal manifest rows, as ``built_objects`` read them. Reads only."""
+    from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECTS_FIELD, additional_objects_problem
+    from .website_extra_objects import _opens, free_before_reconstruction
+    from .website_further_objects import NEEDS_ARTISAN
+    if len(built) < 2:
+        return []
+    rows = {row["target_id"]: row for row in (plan or {}).get("objects") or []}
+    analysis = {str(row.get("target_id")): row for row in entries if row.get("task_effect") == "manipulated"}
+    opened = _opens(rows[built[0]["target_id"]], analysis.get(built[0]["target_id"]))
+    strategy = ("scene_intake_" + str(additional_objects_problem({"strategy": "articulated_open_close",
+                                                                 ADDITIONAL_OBJECTS_FIELD: []})) if opened else None)
+    found = []
+    for position, item in enumerate(built[1:], start=1):
+        missing = None if strategy else free_before_reconstruction(rows[item["target_id"]], analysis.get(item["target_id"]))
+        why = strategy or (f"{NEEDS_ARTISAN}:{missing}" if missing else None)
+        found.append({"rank": built_rank(position), "target_id": item["target_id"], "name": item["name"],
+                      "editor_object_ids": list(item["editor_object_ids"]), "removed": why is None,
+                      **({"kept_in_scan_reason": why} if why else {})})
+    return found
+
+
+def removed_editor_rows(decided: Mapping[str, Any]) -> tuple[list[str], int]:
+    """The scene editor's rows a sealed decision erases, and how many objects they show: its built object's, then each
+    further object's it takes out of the scan with it (``further_rows``: a decision sealed under v3 only)."""
+    further = [row for row in further_rows(decided) if row.get("removed") is True]
+    return ([*decided["built"]["editor_object_ids"], *(item for row in further for item in row["editor_object_ids"])],
+            1 + len(further))
+
+
+def partial_review(review: Mapping[str, Any], editor_object_ids: Sequence[str], *, objects: int = 1) -> dict[str, Any]:
+    """The scene editor's plan erasing only ``editor_object_ids`` and keeping every other object as filmed; ``objects``:
+    how many objects those rows show (the job's own, and any further objects taken out with it)."""
     from .atlas_automation_plan import AutomationPlan
     automation = dict(review.get("automation") or {})
     automation["objects"] = [{**row, "disposition": "remove" if row.get("target_id") in editor_object_ids else "keep"}
                              for row in automation.get("objects") or []]
-    automation["removal_instruction"] = PARTIAL_REMOVAL_INSTRUCTION
+    automation["removal_instruction"] = (PARTIAL_REMOVAL_INSTRUCTION if objects <= 1
+                                         else PARTIAL_REMOVAL_INSTRUCTION_SEVERAL)
     AutomationPlan.model_validate(automation)
     return {**review, "automation": automation}
 
@@ -368,12 +424,14 @@ def _observed_rigid(entry: Mapping[str, Any]) -> bool:
 
 
 def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
-    """The removal manifest as the handoff builds it: with a plan that took one object out of the scan, every other
-    object the analysis named as the job's stays in the room as filmed (``kept_in_scan``), so the build is the one
-    object's; one the plan sources as a parametric shape is named for compile (``PARAMETRIC_SUBJECT``), which authors
-    it as that shape at no cost (``website_supplied_mesh``). So too the one-object job's object, when the plan's row
-    for it is a parametric shape (``single_object``); what is removed from the scan is unchanged. Unchanged without
-    such a plan."""
+    """The removal manifest as the handoff builds it: with a plan that took the job's object out of the scan, each
+    further object a decision sealed under v3 took out with it is marked ``BUILT_EXTRA`` with its rank
+    (``built_rank``), to be built on its own and composed back, and every other object the analysis named as the job's
+    stays in the room as filmed (``kept_in_scan``): the job's one object is the only one ``manipulated``. One the plan
+    sources as a parametric shape is named for compile (``PARAMETRIC_SUBJECT``), which authors it as that shape at no
+    cost (``website_supplied_mesh``). So too the one-object job's object, when the plan's row for it is a parametric
+    shape (``single_object``); what is removed from the scan is unchanged. Unchanged without such a plan; a decision
+    sealed under v2 keeps every further object in the scan, as it always did."""
     from .website_supplied_mesh import PARAMETRIC_SUBJECT
     decided = sealed_decision(capture_root)
     built = (decided or {}).get("built")
@@ -384,7 +442,10 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
                 and _observed_rigid((one or {}).get("entry") or {})):
             return {**removal, PARAMETRIC_SUBJECT: {"target_id": row["target_id"], "shape": row["parametric_shape"]}}
         return dict(removal)
-    entries = [{**row, "task_effect": "kept_in_scan", "kept_in_scan_reason": "build_plan"}
+    taken = {row["target_id"]: row["rank"] for row in further_rows(decided) if row.get("removed") is True}
+    entries = [{**row, "task_effect": BUILT_EXTRA, "built_rank": taken[row["target_id"]]}
+               if row.get("task_effect") == "manipulated" and row.get("target_id") in taken else
+               {**row, "task_effect": "kept_in_scan", "kept_in_scan_reason": "build_plan"}
                if row.get("task_effect") == "manipulated" and row.get("target_id") != built["target_id"] else row
                for row in removal.get("entries") or []]
     shape = built.get("parametric_shape") if built.get("sourcing") == "parametric" else None
@@ -392,6 +453,7 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
             **({PARAMETRIC_SUBJECT: {"target_id": built["target_id"], "shape": shape}} if shape else {})}
 
 
-__all__ = ["DECISION_SCHEMA", "KEEPS_AS_FILMED", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal",
-           "build_plan_notes", "built_object", "built_objects", "built_rank", "decide_plan", "partial_review", "plan_inputs",
-           "plan_notes", "sealed_decision", "single_object", "validate_plan"]
+__all__ = ["BUILT_EXTRA", "DECISION_SCHEMA", "KEEPS_AS_FILMED", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION",
+           "PARTIAL_REMOVAL_INSTRUCTION_SEVERAL", "apply_to_removal", "build_plan_notes", "built_object", "built_objects",
+           "built_rank", "decide_plan", "further_removal", "further_rows", "partial_review", "plan_inputs", "plan_notes",
+           "removed_editor_rows", "sealed_decision", "single_object", "validate_plan"]

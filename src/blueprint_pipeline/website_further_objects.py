@@ -6,11 +6,14 @@ the one the success rule scores (``task.subject``, rank 1). Each one after it is
 those into objects of the job's scene, beside the scored one:
 
 - ``further_inputs``: compile's input, one row per further object, read from what is already sealed (the free source,
-  and for a library model its sealed pick); a caller passes it as ``further_objects``. Nothing on the live path builds
-  it yet: until every built object is taken out of the scan (stage 5), no job has a further object.
+  and for a library model its sealed pick); a caller passes it as ``further_objects``. On the live path the handoff
+  reads it for a decision sealed under v3 only (stage 5, ``sealed_inputs``): the job's Atlas decision took out of the
+  scan, with the job's object and before the room was reconstructed, each further object sure of a free source
+  (``website_build_plan.further_removal``, marked ``BUILT_EXTRA`` on the removal manifest), and kept every other one
+  in the scan (``NOT_BUILT``, with why). A decision sealed earlier has no further object.
 - ``scored_entries``: the removal manifest's moved objects compile reads as the job's own. A further object composition
-  may take is not one of them, so it never holds the job as a several-object one (``MULTI_OBJECT_GAP``); any other
-  several-object job is held as before.
+  may take is not one of them, so it never holds the job as a several-object one (``MULTI_OBJECT_GAP``), in compile
+  and in the handoff alike; any other several-object job is held as before.
 - ``place``: each further object at its own filmed pose, through the scored object's registration (its box from its
   own masks) and the same support snap (it rests on whatever surface is under it in the scan), authored as free
   supplied geometry: its library model when that model is sealed, fetched, still allowed and credited, else the plan's
@@ -26,12 +29,16 @@ those into objects of the job's scene, beside the scored one:
   from the preparation the half's revision was built from; ``refused_rows_dropped``: a packet writer that refuses the
   extra rows has them dropped, flagged ``further_objects_left_out``, and the half goes on.
 
-A further object that needs ARTISAN (the paid generated model, stage 6), that has no track, no registered scene or no
-surface under it, that overlaps the scored object, its destination or another further object, or whose authoring or
-static check fails, is left in the scan as filmed: named with its reason on the record, flagged
-``scene_estimate:further_object_left_in_scan``, and never a stop. Only privacy, rights and money stop a job: a library
-model whose rights cannot be confirmed now is never used. Nothing here reserves, spends, asks a model or fetches beyond
-what the library step already pinned. The success rule still scores only the scored object (``scene_package_stage``).
+A further object the decision kept in the scan (one that needs ARTISAN, the paid generated model, until stage 6) is
+left in the scan as filmed: named with its reason on the record (``left_in_scan``) and flagged
+``scene_estimate:further_object_left_in_scan``. One taken out of the scan (its removal manifest row ``BUILT_EXTRA``)
+that has no track, no registered scene or no surface under it, that overlaps the scored object, its destination or
+another further object, whose authoring or static check fails, or that the request does not take, is in neither the
+scan nor the simulation: named with its reason (``removed_not_built``) and flagged
+``scene_estimate:further_object_removed_not_built``, never said to be in the scan. Neither is ever a stop. Only
+privacy, rights and money stop a job: a library model whose rights cannot be confirmed now is never used. Nothing here
+reserves, spends, asks a model or fetches beyond what the library step already pinned. The success rule still scores
+only the scored object (``scene_package_stage``).
 """
 from __future__ import annotations
 
@@ -56,6 +63,13 @@ DIRECTORY = "further_objects"
 LIBRARY, PARAMETRIC = "library", "parametric"
 #: The flag a further object left in the scan as filmed raises (``atlas_scene_estimates``); the job goes on.
 LEFT_IN_SCAN = "scene_estimate:further_object_left_in_scan"
+#: The flag a further object taken out of the scan and then not built raises: it is in neither; the job goes on.
+REMOVED_NOT_BUILT = "scene_estimate:further_object_removed_not_built"
+#: An input row's reason it is not to be built (``sealed_inputs``): kept in the scan by the decision, or not read as
+#: the decision read it. ``place`` names it with that reason and builds nothing for it.
+NOT_BUILT = "not_built"
+#: ``place``'s mark on a row left unbuilt whose object was taken out of the scan; ``compose`` reads it.
+_TAKEN_OUT = "taken_out_of_scan"
 #: A scene half whose packet writer refused the extra rows: they are dropped, and the half goes on.
 LEFT_OUT = "further_objects_left_out"
 #: Why a further object is left in the scan as filmed; a ``:`` adds the detail (the S1 reason, what it overlaps, the
@@ -104,6 +118,45 @@ def further_inputs(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[
                 rows[row["target_id"]], root=object_root(library_root, row["target_id"]), task_context=task_context,
                 catalog_entries=catalog_entries)
         found.append(item)
+    return found
+
+
+def sealed_inputs(decided: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
+                  task_context: Mapping[str, Any], library_root: Path,
+                  catalog_entries: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Compile's ``further_objects`` for a decision sealed under v3 (``website_build_plan_notes.further_rows``), else
+    none. ``further_inputs`` is read as the decision read the plan: the editor's rows of the objects it would build and
+    the clean plate's own ``entries`` (before the handoff marks them), one row per further object the decision names,
+    by the rank it sealed. One it took out of the scan comes with its free source; one it kept in the scan is marked
+    ``NOT_BUILT`` with the reason it sealed, so composition never builds an object still in the scan; one taken out
+    that is no longer read as it was (another rank, no row, a fault reading it) is marked ``NOT_BUILT`` too
+    (``INPUT_INVALID``, ``FAILED``). Reads only; never a stop of the job."""
+    from .hard_stops import PRIVACY_RIGHTS, wall_kind
+    from .website_build_plan_notes import further_rows
+    sealed = further_rows(decided)
+    if not sealed or not isinstance((decided or {}).get("built"), Mapping):
+        return []
+    editor = [{"target_id": item, "disposition": "remove"}
+              for row in (decided["built"], *sealed) for item in row.get("editor_object_ids") or []]
+    failed = None
+    try:
+        read = {row["target_id"]: row for row in further_inputs(
+            ((decided.get("build_plan") or {}).get("plan")), entries=entries, editor_objects=editor,
+            task_context=task_context, library_root=library_root, catalog_entries=catalog_entries)}
+    except Exception as exc:  # noqa: BLE001 - a further object never stops the scored object's job
+        if wall_kind(exc) == PRIVACY_RIGHTS:
+            raise
+        read, failed = {}, f"{FAILED}:{type(exc).__name__}"
+    found = []
+    for row in sealed:
+        named = {"rank": row["rank"], "target_id": row["target_id"], "name": row.get("name")}
+        item = read.get(row["target_id"])
+        if row.get("removed") is not True:
+            found.append({**named, NOT_BUILT: str(row.get("kept_in_scan_reason") or INPUT_INVALID)})
+        elif item is None or item.get("rank") != row["rank"]:
+            found.append({**named, NOT_BUILT: failed or INPUT_INVALID})
+        else:
+            found.append(dict(item))
     return found
 
 
@@ -335,8 +388,10 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
           runtime_to_sim: Any, residual: float | None, collider: Any, up: int, up_sign: int, mpu: float,
           scored: tuple[Sequence[float], Sequence[float]], destination: Mapping[str, Any] | None, strategy: str,
           origin: str, tolerance: float, output_root: Path) -> dict[str, Any]:
-    """Each further object placed and authored (``objects``), each one left in the scan with why (``left_in_scan``),
-    and the records the intake request names (``requested``, ``website_preparation_request.additional_objects``).
+    """Each further object placed and authored (``objects``), each one not built with why (``left_in_scan``; marked
+    for ``compose`` when its removal manifest row says it was taken out of the scan, ``BUILT_EXTRA``), and the records
+    the intake request names (``requested``, ``website_preparation_request.additional_objects``). A row marked
+    ``NOT_BUILT`` is named with its reason and nothing is authored for it.
 
     ``scored``: the scored object's box at its start (runtime units), ``destination`` its destination (simulator frame);
     ``matrix``, ``runtime_to_sim``, ``residual``, ``up``, ``up_sign`` and ``mpu`` are compile's own registration and
@@ -345,14 +400,20 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
     empty: dict[str, Any] = {"objects": [], "left_in_scan": [], "requested": []}
     if not rows:
         return empty
+    from .website_build_plan import BUILT_EXTRA
+    by_target = {str(row.get("target_id")): row for row in entries if isinstance(row, Mapping)}
+
+    def unbuilt(row: Mapping[str, Any], reason: str) -> dict[str, Any]:
+        # Taken out of the scan (``BUILT_EXTRA``) and not built: ``compose`` names it so, never as in the scan.
+        taken = (by_target.get(str(row.get("target_id"))) or {}).get("task_effect") == BUILT_EXTRA
+        return {**_left(row, reason), **({_TAKEN_OUT: True} if taken else {})}
     problem = _problem(rows, strategy=strategy, origin=origin)
     if problem is not None:
         reason = problem if problem == INPUT_INVALID else "scene_intake_" + problem
-        return {**empty, "left_in_scan": [_left(row, reason) for row in rows]}
+        return {**empty, "left_in_scan": [unbuilt(row, row.get(NOT_BUILT) or reason) for row in rows]}
     from .website_support_geometry import nearest_support_under, support_under
     from .website_task_masks import estimate_target_bounds
     from .website_task_preparation import screen_physics
-    by_target = {str(row.get("target_id")): row for row in entries if isinstance(row, Mapping)}
     start = _box(*scored, runtime_to_sim)
     boxes = [("scored_object_start", start)]
     end = _destination_box(destination, *start)
@@ -363,6 +424,8 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
     def one(row: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         rank, target_id = int(row["rank"]), str(row["target_id"])
         target = targets.get(target_id)
+        if row.get(NOT_BUILT):
+            return None, str(row[NOT_BUILT])
         if row.get("source") not in (LIBRARY, PARAMETRIC):
             return None, NEEDS_ARTISAN + ":" + str((row.get("needs_artisan") or {}).get("reason") or "")
         if collider is None:
@@ -416,7 +479,7 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
         except Exception as exc:  # noqa: BLE001 - a further object never stops the scored object's job
             item, why = None, f"{FAILED}:{type(exc).__name__}"
         if item is None:
-            left.append(_left(row, str(why)))
+            left.append(unbuilt(row, str(why)))
         else:
             placed.append(item)
     requested = [{"rank": item["rank"], "entry": item["entry"], "aabb_min": item["sim_min"], "aabb_max": item["sim_max"],
@@ -433,11 +496,14 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
             base_scene: Mapping[str, Any], mpu: float, registration_path: Path,
             output_root: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """The preparation's ``further_objects`` record and each composed object's compose-back record by its target, for
-    the further objects the intake request ``task`` took (``usable_additional_objects``); every other one left in the
-    scan, flagged. Empty for a job with no further object, so its preparation is as before."""
+    the further objects the intake request ``task`` took (``usable_additional_objects``). Every other one is named with
+    why: one taken out of the scan under ``removed_not_built`` (in neither the scan nor the simulation), any other
+    under ``left_in_scan`` (as filmed); each flagged. Empty for a job with no further object, so its preparation is as
+    before; ``removed_not_built`` is written only when it names one, so a record without one is as stage 3 wrote it."""
     if not placed.get("objects") and not placed.get("left_in_scan"):
         return {}, {}
     from .task_evaluation_scene_intent_contracts import usable_additional_objects
+    from .website_build_plan import BUILT_EXTRA
     from .website_preparation_request import compose_back_record, replacement_id
     taken = {row["rank"] for row in usable_additional_objects(task)}
     objects: list[dict[str, Any]] = []
@@ -445,7 +511,8 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
     backs: dict[str, dict[str, Any]] = {}
     for item in placed.get("objects") or []:
         if item["rank"] not in taken:
-            left.append(_left(item, NOT_TAKEN))
+            removed = (item.get("entry") or {}).get("task_effect") == BUILT_EXTRA
+            left.append({**_left(item, NOT_TAKEN), **({_TAKEN_OUT: True} if removed else {})})
             continue
         slot = len(objects) + 2
         back = compose_back_record(task_context=task_context, subject_min=item["runtime_min"],
@@ -470,8 +537,11 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
             "pose_world": {"position_world_m": item["position"], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
             "support": item["support"], "compose_back": back})
     left.sort(key=lambda row: (row["rank"] if isinstance(row["rank"], int) else 99, row["target_id"]))
+    gone = [{key: value for key, value in row.items() if key != _TAKEN_OUT} for row in left if row.get(_TAKEN_OUT)]
+    left = [row for row in left if not row.get(_TAKEN_OUT)]
     record = {"schema_version": SCHEMA_VERSION, "revision": REVISION, "scored_object": SCORED_PRIM,
-              "objects": objects, "left_in_scan": left, "flags": [LEFT_IN_SCAN] if left else [],
+              "objects": objects, "left_in_scan": left, **({"removed_not_built": gone} if gone else {}),
+              "flags": [*([LEFT_IN_SCAN] if left else []), *([REMOVED_NOT_BUILT] if gone else [])],
               "claim_boundary": CLAIM}
     record["digest"] = canonical_digest(record, digest_field="digest")
     return {"further_objects": record}, backs
@@ -568,7 +638,7 @@ def half_record(further: Mapping[str, Any] | None, rows_written: Sequence[Mappin
                                 **({LEFT_OUT: dropped} if dropped else {})}}
 
 
-__all__ = ["DIRECTORY", "LEFT_IN_SCAN", "LEFT_OUT", "NEEDS_ARTISAN", "NOT_TAKEN", "OVERLAPS", "ROLE", "SCHEMA_VERSION",
-           "SCORED_PRIM", "STATIC_CHECK_FAILED", "author", "author_library_asset", "compose", "for_revision",
-           "further_inputs", "half_record", "place", "refused_rows_dropped", "rows", "runtime_id",
-           "scored_entries", "seat", "static_check"]
+__all__ = ["DIRECTORY", "LEFT_IN_SCAN", "LEFT_OUT", "NEEDS_ARTISAN", "NOT_BUILT", "NOT_TAKEN", "OVERLAPS",
+           "REMOVED_NOT_BUILT", "ROLE", "SCHEMA_VERSION", "SCORED_PRIM", "STATIC_CHECK_FAILED", "author",
+           "author_library_asset", "compose", "for_revision", "further_inputs", "half_record", "place",
+           "refused_rows_dropped", "rows", "runtime_id", "scored_entries", "seat", "sealed_inputs", "static_check"]

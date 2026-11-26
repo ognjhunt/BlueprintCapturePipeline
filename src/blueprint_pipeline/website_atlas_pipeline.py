@@ -461,6 +461,35 @@ def background_floor(output_root: Path, review, task_context, automation=None):
     return {**_kept(review), "job_object_rule": rule}
 
 
+def _erase_alone(output_root: Path, automation) -> bool:
+    """Seal, once, that the scene editor could not take a v3 decision's further objects out of the views with the
+    job's object: its erase stopped on a stop ``background_floor`` names (the object not seen or outlined well enough,
+    or the review never passed), for any reason but money (at the job's cap the room goes as filmed, as ever). A
+    further object never costs the job its object: the next run erases the job's object alone, as a v2 decision does,
+    in its own automation root (it pays only for that erase, admitted inside the job's cap like any other; at the cap
+    the room goes as filmed), and each further object stays in the scan as filmed, named
+    (``website_build_plan_notes.NOT_ERASABLE``). If the job's object alone cannot be erased either, the job goes on
+    exactly as a v2 job would. True when this run sealed it."""
+    from .website_build_plan_notes import (ERASE_FALLBACK_RECORD, ERASE_FALLBACK_SCHEMA, erase_fallback,
+                                           further_rows)
+    background = (automation or {}).get("background") or {}
+    status, reason = (automation or {}).get("status"), background.get("reason")
+    if not (status == "quality_rejected" or (status == "needs_input" and reason in BACKGROUND_FLOOR_REASONS)) \
+            or reason == SPENDING_CAP_REACHED or not (output_root / JOB_OBJECT_RECORD).is_file():
+        return False
+    decided = json.loads((output_root / JOB_OBJECT_RECORD).read_text())
+    removed = [row["target_id"] for row in further_rows(decided) if row.get("removed") is True]
+    if (decided.get("digest") != canonical_digest(decided, digest_field="digest") or not removed
+            or erase_fallback(output_root, decided) is not None):
+        return False
+    record = {"schema_version": ERASE_FALLBACK_SCHEMA, "decision_digest": decided["digest"],
+              "cause": reason if status == "needs_input" else "atlas_background_review_required",
+              "further_target_ids": removed, "union_automation": "automation"}
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    write_json(output_root / ERASE_FALLBACK_RECORD, record)
+    return True
+
+
 def job_object_review(output_root: Path, review, task_context, source_digest: str | None = None):
     """The review as this job consumes it, and whether the decision waits for the clean plate.
 
@@ -520,7 +549,8 @@ def job_object_review(output_root: Path, review, task_context, source_digest: st
         reason = (_kept_job_objects(entries) if status in ("noop", "objects_removed") and isinstance(entries, list)
                   and all(isinstance(row, dict) for row in entries) else None)
         # The build plan (owner direction 2026-11-23): a model says what the simulation needs. With several objects or a
-        # soft one, its most important buildable object is taken out alone and the rest stay as filmed.
+        # soft one, its most important buildable object is taken out, with each further one sure to be built free
+        # (stage 5, sealed under v3); the rest stay as filmed.
         plannable = (status in ("noop", "objects_removed") and isinstance(entries, list) and reason != ""
                      and all(isinstance(row, dict) for row in entries))
         planned = (_build_plan(output_root, clean, entries, automation, task_context, reason, source_digest)
@@ -530,14 +560,18 @@ def job_object_review(output_root: Path, review, task_context, source_digest: st
         built = planned.get("built") if planned else None
         applied = (reason is not None and built is None
                    and (not review.get("transient_frame_ids") or takes_reviewed_background(kept)))
-        decided = {"schema_version": "atlas_job_object_rule.v2" if planned else "atlas_job_object_rule.v1",
+        from .website_build_plan_notes import DECISION_SCHEMA  # v3: further objects taken out too (``further``)
+        decided = {"schema_version": DECISION_SCHEMA if planned else "atlas_job_object_rule.v1",
                    "applied": applied, "clean_plate_status": status, "planner_remove_count": asked,
                    **({"job_objects_kept": reason} if applied and reason else {}), **(planned or {})}
         decided["digest"] = canonical_digest(decided, digest_field="digest")
         write_json(path, decided)
     if isinstance(decided.get("built"), dict):
-        from .website_build_plan import partial_review
-        return partial_review(review, decided["built"]["editor_object_ids"]), False
+        from .website_build_plan import partial_review, removed_editor_rows
+        from .website_build_plan_notes import with_erase_fallback
+        # v2, or v3 once its further objects could not be erased with it (``_erase_alone``): the built object's alone.
+        rows, objects = removed_editor_rows(with_erase_fallback(decided, output_root))
+        return partial_review(review, rows, objects=objects), False
     if decided.get("applied") is not True:
         return review, False
     rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0,
@@ -588,10 +622,11 @@ def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation,
                 source_digest: str | None = None):
     """The build plan's part of the sealed decision (``website_build_plan``), "waiting" while another run holds its
     call, or None when it cannot be asked. ``built`` and ``kept_in_scan_target_ids`` only where the analysis named several
-    objects or a soft one and the plan names one the job can build: then that one alone is taken out of the scan."""
+    objects or a soft one and the plan names one the job can build: then that one is taken out of the scan, with each
+    further object the plan would build that is sure of a free source (``further``, ``further_removal``)."""
     from .clean_plate_stage import REMOVAL_PLAN_FILENAME
     from .website_build_choice import IN_PROGRESS
-    from .website_build_plan import built_object, decide_plan
+    from .website_build_plan import built_objects, decide_plan, further_removal
     try:
         targets = json.loads((clean / REMOVAL_PLAN_FILENAME).read_text()).get("targets")
     except (OSError, ValueError, AttributeError):
@@ -605,12 +640,16 @@ def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation,
         if str(exc) == IN_PROGRESS:
             return "waiting"
         raise
-    built = (built_object(record.get("plan"), entries=entries, editor_objects=editor)
+    every = (built_objects(record.get("plan"), entries=entries, editor_objects=editor)
              if reason in (SEVERAL_JOB_OBJECTS, SOFT_JOB_OBJECT) and _authors_one_object(output_root, task_context, source_digest)
-             else None)
-    kept = sorted(str(row.get("target_id")) for row in entries
-                  if row.get("task_effect") == "manipulated" and built and row.get("target_id") != built["target_id"])
-    return {"build_plan": record, **({"built": built, "kept_in_scan_target_ids": kept} if built else {})}
+             else [])
+    built = every[0] if every else None
+    further = further_removal(record.get("plan"), every, entries=entries)
+    taken = {row["target_id"] for row in further if row["removed"]}
+    kept = sorted(str(row.get("target_id")) for row in entries if row.get("task_effect") == "manipulated" and built
+                  and row.get("target_id") != built["target_id"] and row.get("target_id") not in taken)
+    return {"build_plan": record, **({"built": built, "kept_in_scan_target_ids": kept,
+                                      **({"further": further} if further else {})} if built else {})}
 
 
 def _job_edit_scope(output_root: Path, requested: str | None, *, default="required_and_additional") -> str:
@@ -1508,8 +1547,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             write_json(binding_path, binding)
     reuse_options = {}
     if feedback is not None:
-        parent_background = Path(feedback['parent_root']) / 'automation/background/prepared_background.json'
-        if parent_background.is_file():
+        from .website_build_plan_notes import JOB_OBJECT_ALONE_AUTOMATION  # where a job object erased alone is
+        parent_background = next((path for name in (JOB_OBJECT_ALONE_AUTOMATION, 'automation') if (
+            path := Path(feedback['parent_root']) / name / 'background/prepared_background.json').is_file()), None)
+        if parent_background is not None:
             reuse_options['prior_background_path'] = parent_background
     base_root = output_root / "survey"
     survey_path = base_root / "atlas_video_survey.json"
@@ -1661,8 +1702,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                            if feedback is not None else base_root / 'atlas_video_survey.json'), survey_path],
             output=output_root / 'capture_source_survey.json')
         check("reviewed_background")
+        from .website_build_plan_notes import JOB_OBJECT_ALONE_AUTOMATION, erase_fallback
+        alone = (output_root / JOB_OBJECT_RECORD).is_file() and erase_fallback(
+            output_root, json.loads((output_root / JOB_OBJECT_RECORD).read_text())) is not None
+        automation_root = JOB_OBJECT_ALONE_AUTOMATION if alone else "automation"
         automation = run_sponsored_website_atlas_automation(
-            pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
+            pose_root=None, inputs=inputs, review=review, output_root=output_root / automation_root,
             task_context=task_context, configuration=_current_configuration(task_context, source_digest, config),
             experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope,
             source_survey_path=full_source_survey,
@@ -1671,6 +1716,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             return automation
         if automation["status"] == "processing":
             return automation
+        if not alone and _erase_alone(output_root, automation):
+            # The further objects could not be taken out with the job's object: the next run erases it alone.
+            return {"status": "processing", "stage": "job_object_erased_alone"}
         floored = background_floor(output_root, review, task_context, automation)
         if floored is not None:
             # The object could not be taken out cleanly: it stays, and so does the rest of the room.
@@ -1688,7 +1736,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return finalize_background_result(output_root=output_root, source_digest=source_digest,
             task_context=task_context, automation=automation, source_pose=source_pose,
             model=receipt["model"], edit_scope=edit_scope,
-            selection=view_selection(pose_root), not_applied=review.get(NOT_APPLIED_FIELD))
+            selection=view_selection(pose_root), not_applied=review.get(NOT_APPLIED_FIELD),
+            automation_root=automation_root if alone else None)
     count = len(inputs["frames"])
     # The targets the generation will ask for; the reviewed count where none is posed (never fewer than asked).
     target_count = (len(generation_target_ids(review=review, inputs=inputs))
@@ -1804,11 +1853,13 @@ def covered(pose_root) -> bool:
 
 
 def finalize_background_result(*, output_root, source_digest, task_context, automation, source_pose, model, edit_scope=None,
-                               selection=None, not_applied=None):
+                               selection=None, not_applied=None, automation_root=None):
     """The same durable handoff for a fresh job or a retained completed background.
 
     ``selection`` (the job's ``atlas_view_selection.json``) names what the views left out: the result
-    says so and carries its estimate flags, never that the task and room were covered.
+    says so and carries its estimate flags, never that the task and room were covered. ``automation_root``: the
+    folder the background was made in when it is not ``automation`` (the job's object erased alone, ``_erase_alone``),
+    named on the result for the scene source.
     """
     from .atlas_scene_estimates import scene_estimates
     selection = selection or {}
@@ -1845,6 +1896,8 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
     if not_applied:
         # People were erased, so this is no scene as filmed: recorded where the scene source never looks.
         result[NOT_APPLIED_FIELD] = not_applied
+    if automation_root:
+        result["automation_relative_path"] = automation_root
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result

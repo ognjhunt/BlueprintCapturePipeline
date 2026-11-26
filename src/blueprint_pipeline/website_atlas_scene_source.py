@@ -390,6 +390,12 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                                              scale=scale, output_root=geometry_root)
 
     automation_root = job_dir / "automation"
+    if result.get("automation_relative_path") is not None:
+        # The job's object erased alone, after its further objects could not be erased with it (2026-11-26).
+        from .website_build_plan_notes import JOB_OBJECT_ALONE_AUTOMATION
+        if result["automation_relative_path"] != JOB_OBJECT_ALONE_AUTOMATION:
+            raise ValueError("website_atlas_scene_automation_root_invalid")
+        automation_root = job_dir / JOB_OBJECT_ALONE_AUTOMATION
     if result.get('target_correction'):
         from .website_target_background_worker import _bound_request
         _, request = _bound_request(job_dir, result['target_correction'])
