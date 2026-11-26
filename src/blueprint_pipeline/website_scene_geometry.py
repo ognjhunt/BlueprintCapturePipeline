@@ -26,6 +26,8 @@ from .local_reconstruction_adapters import LocalDecodedObservationAdapter, _sha2
 LEGACY_MODEL_ID = "facebook/map-anything-apache"
 LEGACY_MODEL_CODE_REVISION = "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9"
 INPUT_SCHEMA = "website_geometry_inputs.v1"
+#: The fewest frames a source-frame or source-geometry document holds; ``_bound_frames`` refuses fewer.
+MINIMUM_FRAMES = 2
 _FRAME_ARTIFACTS = (("source_image_path", "source_image_digest"),
                     ("image_path", "image_digest"), ("geometry_path", "geometry_digest"))
 
@@ -70,7 +72,7 @@ def _bound_frames(document: Mapping[str, Any], root: Path, *, geometry: bool) ->
     if document.get("digest") != canonical_digest(document, digest_field="digest"):
         raise ValueError("website_source_geometry_digest_mismatch")
     rows = document.get("frames")
-    if not isinstance(rows, list) or len(rows) < 2:
+    if not isinstance(rows, list) or len(rows) < MINIMUM_FRAMES:
         raise ValueError("website_source_frames_invalid")
     limit = document.get("binding", {}).get("maximum_frames")
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)

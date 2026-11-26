@@ -99,6 +99,10 @@ For captured manipulated subjects, the existing replacement route is unchanged:
     `reference_estimate`, bound to the measurement file's digest.
   - Frames keep their decoded frame identity and an exact source-to-geometry
     pixel transform, including the phone's display rotation.
+  - A view where Atlas returned no pixel with positive depth and positive
+    confidence is left out and named in `views_without_depth`; the others go
+    on. The step stops (`atlas_source_geometry_no_valid_depth`) only when
+    fewer than two views keep depth.
 - **Alignment:** the background was posed separately, so it lives in another
   Atlas world. The cameras both poses share give the similarity between the
   two worlds. Rotation comes from the cameras' orientations, so a

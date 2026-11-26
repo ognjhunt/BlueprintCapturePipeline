@@ -13,6 +13,13 @@ the same map (Atlas puts pixel centres at +0.5, source geometry at integers),
 cameras become OpenCV camera-to-world, and depth stays z-depth, read exactly
 as ``atlas_depth_splat`` reads it.
 
+A view where Atlas returned no pixel with both positive depth and positive
+confidence adds no geometry: it is left out and named, with what was measured,
+in ``views_without_depth``, and the other views go on. Nothing is filled in for
+it. The step refuses (``atlas_source_geometry_no_valid_depth``) only when fewer
+views keep depth than a source geometry holds (``website_scene_geometry.MINIMUM_FRAMES``).
+Each reader looks frames up by id, so it reads the views kept and never a left-out one.
+
 Atlas depth is in unscaled world units, and every consumer of source geometry
 reads metres. A result built without a scale is kept for comparison only and
 ``load_atlas_source_geometry`` refuses it; a scale names its basis and the
@@ -46,6 +53,9 @@ POSE_RESULT = "atlas_posed_rgbd_result.json"
 #: A floor that catches a wrong crop map, not the comparison's frozen threshold:
 #: the returned RGB, averaged back onto the model grid, must match what was sent.
 PIXEL_BINDING_MIN_NCC = 0.9
+NO_VALID_DEPTH = "atlas_source_geometry_no_valid_depth"
+#: The views left out because Atlas returned no valid depth for them; present only when there are some.
+VIEWS_WITHOUT_DEPTH = "views_without_depth"
 SCALE_BASES = ("measured_calibration", "reference_estimate")
 _SHA = re.compile(r"sha256:[0-9a-f]{64}")
 _FRAME_FILES = (("source_image_path", "source_image_digest"), ("image_path", "image_digest"))
@@ -175,12 +185,17 @@ def _verified_pose(*, inputs: Mapping[str, Any], frames: list[Mapping[str, Any]]
 
 
 def _geometry_frames(*, views: list[Mapping[str, Any]], pose: Mapping[str, Any], pose_root: Path,
-                     output_root: Path, meters_per_unit: float, retain_inputs: bool) -> list[dict[str, Any]]:
-    """Each view's pixels take the Atlas pixel their centre falls in, after cover-and-centre-crop."""
+                     output_root: Path, meters_per_unit: float,
+                     retain_inputs: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Each view's pixels take the Atlas pixel their centre falls in, after cover-and-centre-crop.
+
+    Returns the geometry frames and the views left out for want of valid depth (``VIEWS_WITHOUT_DEPTH``).
+    """
     from .atlas_depth_splat import read_exr_depth
+    from .website_scene_geometry import MINIMUM_FRAMES
 
     usage = pose["operation_receipt"]["input_usage"]["frames"]
-    frames = []
+    frames, without_depth = [], []
     for index, (row, returned, used) in enumerate(zip(views, pose["operation"]["response"]["frames"], usage,
                                                       strict=True)):
         outputs = {output["role"]: pose_root / output["path"] for output in used["outputs"]}
@@ -203,10 +218,20 @@ def _geometry_frames(*, views: list[Mapping[str, Any]], pose: Mapping[str, Any],
         sampled_depth = depth[mapping["rows"][:, None], mapping["columns"][None, :]]
         sampled_confidence = confidence[mapping["rows"][:, None], mapping["columns"][None, :]]
         with np.errstate(invalid="ignore"):
-            valid = (mapping["inside"] & np.isfinite(sampled_depth) & (sampled_depth > 0)
-                     & np.isfinite(sampled_confidence) & (sampled_confidence > 0))
+            depth_ok = np.isfinite(sampled_depth) & (sampled_depth > 0)
+            confidence_ok = np.isfinite(sampled_confidence) & (sampled_confidence > 0)
+        valid = mapping["inside"] & depth_ok & confidence_ok
         if not valid.any():
-            raise ValueError("atlas_source_geometry_no_valid_depth")
+            # Atlas stands behind no pixel of this view: it adds no geometry, so it is left out, named, and
+            # the other views go on. The owner's apartment clip (2026-11-24) had three of 204 views whose
+            # depth was finite but whose confidence map was zero everywhere; each retry stopped the job.
+            inside = mapping["inside"]
+            without_depth.append({
+                "frame_id": row["frame_id"], "view_index": index, "reason": NO_VALID_DEPTH,
+                "inside_pixel_fraction": float(inside.mean()),
+                "positive_depth_fraction": float(depth_ok[inside].mean()) if inside.any() else 0.0,
+                "positive_confidence_fraction": float(confidence_ok[inside].mean()) if inside.any() else 0.0})
+            continue
         world_from_camera = opencv_world_from_camera(camera["extrinsics"], meters_per_unit)
         geometry_path = output_root / "geometry" / f"{index:06d}.npz"
         with handoff_effect("atlas_geometry_frame_promotion"):
@@ -233,11 +258,14 @@ def _geometry_frames(*, views: list[Mapping[str, Any]], pose: Mapping[str, Any],
                        "atlas_frame": {"grid": list(grid), "cover_scale": mapping["scale"],
                                        "crop_offset": list(mapping["offset"]), "pixel_binding_ncc": ncc,
                                        "coordinate_system": camera["extrinsics"].get("coordinateSystem", "rub")}})
-    return frames
+    if len(frames) < MINIMUM_FRAMES:
+        # Too few views keep depth for a source geometry to hold (``website_scene_geometry._bound_frames``).
+        raise ValueError(NO_VALID_DEPTH)
+    return frames, without_depth
 
 
 def _write_result(*, binding: Mapping[str, Any], frames: list[Mapping[str, Any]], record: Mapping[str, Any] | None,
-                  manifest_path: Path) -> dict[str, Any]:
+                  manifest_path: Path, without_depth: list[Mapping[str, Any]]) -> dict[str, Any]:
     result = {"schema_version": SCHEMA_VERSION, "status": "estimated", "binding": dict(binding),
               "geometry_backend": BACKEND, "claim_ceiling": "development_only",
               "coordinate_system": "opencv_camera_to_world",
@@ -245,6 +273,9 @@ def _write_result(*, binding: Mapping[str, Any], frames: list[Mapping[str, Any]]
               "scale_status": "reference_scaled" if record else "unscaled_provider_world_units",
               "metric_measurement_proven": False, "physical_evidence": False,
               "confidence_is_calibrated_probability": False, "frames": list(frames)}
+    if without_depth:
+        # Only then, so a geometry that kept every view is the same document, and digest, as before.
+        result[VIEWS_WITHOUT_DEPTH] = [dict(row) for row in without_depth]
     result["digest"] = canonical_digest(result, digest_field="digest")
     guarded_handoff_write_json(manifest_path, result)
     return _rebound(result, manifest_path)
@@ -275,9 +306,11 @@ def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = Non
         if previous.get("binding") != binding:
             raise ValueError("atlas_source_geometry_identity_conflict")
         return _rebound(previous, manifest_path)
-    frames = _geometry_frames(views=prepared, pose=pose, pose_root=geometry_root, output_root=output_root,
-                              meters_per_unit=record["meters_per_unit"] if record else 1.0, retain_inputs=True)
-    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path)
+    frames, without_depth = _geometry_frames(
+        views=prepared, pose=pose, pose_root=geometry_root, output_root=output_root,
+        meters_per_unit=record["meters_per_unit"] if record else 1.0, retain_inputs=True)
+    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path,
+                         without_depth=without_depth)
 
 
 def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mapping[str, Any],
@@ -359,9 +392,10 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
                 key: value for key, value in record.items() if key not in _SCALE_PROVENANCE}}):
             return _rebound(previous, manifest_path)
     bound = _bound_frames(geometry_inputs, worker, geometry=False)
-    frames = _geometry_frames(views=bound, pose=pose, pose_root=pose_root, output_root=output_root,
-                              meters_per_unit=record["meters_per_unit"], retain_inputs=False)
-    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path)
+    frames, without_depth = _geometry_frames(views=bound, pose=pose, pose_root=pose_root, output_root=output_root,
+                                             meters_per_unit=record["meters_per_unit"], retain_inputs=False)
+    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path,
+                         without_depth=without_depth)
 
 
 def _rebound(result: Mapping[str, Any], manifest_path: Path) -> dict[str, Any]:
@@ -389,9 +423,14 @@ def load_atlas_source_geometry(*, manifest_path: Path, inputs: Mapping[str, Any]
             or _scale_record(binding.get("scale")) is None):
         raise ValueError("atlas_source_geometry_identity_conflict")
     value = _rebound(result, manifest_path)
-    if len(value["frames"]) != len(inputs["frames"]):
+    # The inputs' views in order, less those named as having no valid depth (each an input view, named once).
+    left_out = [row.get("frame_id") if isinstance(row, Mapping) else None
+                for row in result.get(VIEWS_WITHOUT_DEPTH) or []]
+    kept = [source for source in inputs["frames"] if source["frame_id"] not in left_out]
+    if (len(set(left_out)) != len(left_out) or len(kept) + len(left_out) != len(inputs["frames"])
+            or len(value["frames"]) != len(kept)):
         raise ValueError("atlas_source_geometry_frame_mismatch")
-    for frame, source in zip(value["frames"], inputs["frames"], strict=True):
+    for frame, source in zip(value["frames"], kept, strict=True):
         if any(frame.get(key) != item for key, item in source.items() if key not in {"source_image_path", "image_path"}):
             raise ValueError("atlas_source_geometry_frame_mismatch")
     return value
