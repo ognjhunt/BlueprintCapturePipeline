@@ -530,7 +530,8 @@ def job_object_review(output_root: Path, review, task_context, source_digest: st
         built = planned.get("built") if planned else None
         applied = (reason is not None and built is None
                    and (not review.get("transient_frame_ids") or takes_reviewed_background(kept)))
-        decided = {"schema_version": "atlas_job_object_rule.v2" if planned else "atlas_job_object_rule.v1",
+        from .website_build_plan_notes import DECISION_SCHEMA  # v3: further objects taken out too (``further``)
+        decided = {"schema_version": DECISION_SCHEMA if planned else "atlas_job_object_rule.v1",
                    "applied": applied, "clean_plate_status": status, "planner_remove_count": asked,
                    **({"job_objects_kept": reason} if applied and reason else {}), **(planned or {})}
         decided["digest"] = canonical_digest(decided, digest_field="digest")

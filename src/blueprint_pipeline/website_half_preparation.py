@@ -292,10 +292,12 @@ def further_objects(preparation: Mapping[str, Any], capture_root: Path) -> dict[
     """What the half's own preparation did with each further object of the job (its ``further_objects`` record,
     ``website_further_objects``), for the README and the plan's note (``website_build_plan_notes``): ``composed``, each
     by its identity (``website_library_notes``), with how it was built (``source``; its shape, in plain words, for a
-    parametric one), and ``left_in_scan``, each with its reason code. Each is named by the job's sealed build plan in
+    parametric one), ``left_in_scan``, each with its reason code, and ``removed_not_built`` (only when it names one:
+    taken out of the scan, then not built), each with its reason code. Each is named by the job's sealed build plan in
     plain object words only, never the site's. Empty without any, so a one-object package is as before."""
     record = preparation.get("further_objects")
-    if not isinstance(record, Mapping) or not (record.get("objects") or record.get("left_in_scan")):
+    if not isinstance(record, Mapping) or not (record.get("objects") or record.get("left_in_scan")
+                                               or record.get("removed_not_built")):
         return {}
     from .website_build_plan_notes import UNNAMED, plan_names, sealed_decision
     names = plan_names(sealed_decision(capture_root))
@@ -311,9 +313,10 @@ def further_objects(preparation: Mapping[str, Any], capture_root: Path) -> dict[
         composed.append({**named(row), **library_notes.identity(row), "source": row.get("source"),
                          **({"shape": SHAPE_WORDS.get(str(design.get("shape")), "simple")}
                             if row.get("source") == "parametric" else {})})
-    left = [{**named(row), "reason": str(row.get("reason"))} for row in record.get("left_in_scan") or []
-            if isinstance(row, Mapping)]
-    return {"further_objects": {"composed": composed, "left_in_scan": left}}
+    left, gone = ([{**named(row), "reason": str(row.get("reason"))} for row in record.get(key) or []
+                   if isinstance(row, Mapping)] for key in ("left_in_scan", "removed_not_built"))
+    return {"further_objects": {"composed": composed, "left_in_scan": left,
+                                **({"removed_not_built": gone} if gone else {})}}
 
 
 def handoff_base_scene(capture_root: Path) -> dict[str, Any]:

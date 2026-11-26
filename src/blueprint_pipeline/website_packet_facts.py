@@ -73,6 +73,9 @@ ESTIMATE_SENTENCES = {
     # reasons are many (a paid model, a place or check that failed, a request that could not take it) and the flag
     # carries none, so the sentence names none; the package's plan note says which and why.
     "scene_estimate:further_object_left_in_scan": "One or more of the job's other objects were not built as objects of their own: they are left as the scan shows them, and the success rule does not score them.",
+    # One taken out of the scan before it was made, to be built as its own object, and then not built: it is in
+    # neither the scan nor the simulation, so the sentence never says it is in the scan.
+    "scene_estimate:further_object_removed_not_built": "One or more of the job's other objects were taken out of the scan to be built as objects of their own, but could not be built, so they are not in this simulation.",
 }
 #: Where the gap views were not admitted nothing was generated, so the surroundings lines say only what was left out.
 NOT_FILLED_IN_SENTENCES = {
