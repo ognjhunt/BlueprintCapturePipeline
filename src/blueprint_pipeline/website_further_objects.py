@@ -448,12 +448,6 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
     return {"further_objects": record}, backs
 
 
-def not_scored(record: Mapping[str, Any] | None) -> list[str]:
-    """The prim paths of the further objects a ``further_objects`` record composed: what the success rule does not
-    score."""
-    return [str(row["prim_path"]) for row in (record or {}).get("objects") or [] if isinstance(row, Mapping)]
-
-
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -547,5 +541,5 @@ def half_record(further: Mapping[str, Any] | None, rows_written: Sequence[Mappin
 
 __all__ = ["DIRECTORY", "LEFT_IN_SCAN", "LEFT_OUT", "NEEDS_ARTISAN", "NOT_TAKEN", "OVERLAPS", "ROLE", "SCHEMA_VERSION",
            "SCORED_PRIM", "STATIC_CHECK_FAILED", "author", "author_library_asset", "compose", "for_revision",
-           "further_inputs", "half_record", "not_scored", "place", "refused_rows_dropped", "rows", "runtime_id",
+           "further_inputs", "half_record", "place", "refused_rows_dropped", "rows", "runtime_id",
            "scored_entries", "static_check"]
