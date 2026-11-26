@@ -91,8 +91,11 @@ def camera_payload(rotation_cv, position, axes):
                                                    "quaternion": quaternion_xyzw(matrix)}}
 
 
-def build(root, *, axes="rub", corrupt_rgb=False, binding_digest=None):
-    """A geometry root as scene preparation and an admitted pose run would leave it."""
+def build(root, *, axes="rub", corrupt_rgb=False, binding_digest=None, blind=()):
+    """A geometry root as scene preparation and an admitted pose run would leave it.
+
+    ``blind``: views Atlas returned finite depth for but zero confidence everywhere.
+    """
     rng = np.random.default_rng(7)
     inputs_root = root / "worker_inputs"
     (inputs_root / "model_inputs").mkdir(parents=True)
@@ -118,7 +121,7 @@ def build(root, *, axes="rub", corrupt_rgb=False, binding_digest=None):
         out.mkdir(parents=True)
         cv2.imwrite(str(out / "image.png"), atlas_rgb[..., ::-1])
         write_exr(out / "depth.exr", plane_depth(rotation_cv, position))
-        confidence = np.full((GRID[1], GRID[0]), 200, np.uint8)
+        confidence = np.full((GRID[1], GRID[0]), 0 if index in blind else 200, np.uint8)
         confidence[10, 10] = 0
         cv2.imwrite(str(out / "confidence.png"), confidence)
         outputs.append([{"role": role, "asset_id": f"asset_{role}_{index}", "path": f"atlas_pose/outputs/{index:06d}/{name}",
@@ -209,6 +212,50 @@ def test_a_scale_applies_to_depth_and_cameras_and_only_scaled_geometry_loads(tmp
     loaded = geometry.load_atlas_source_geometry(
         manifest_path=Path(scaled["manifest_path"]), inputs=inputs)
     assert loaded["binding"]["input_digest"] == inputs["digest"] and len(loaded["frames"]) == 3
+
+
+def test_a_view_atlas_returned_no_confidence_for_is_left_out_named_and_the_others_go_on(tmp_path):
+    # The owner's apartment clip (2026-11-24): 3 of 204 views came back with finite depth and a confidence
+    # map of zeros, and every retry stopped the whole step on atlas_source_geometry_no_valid_depth.
+    inputs = build(tmp_path, blind={1})
+    result = geometry.atlas_source_geometry(geometry_root=tmp_path, scale=SCALE)
+    assert [frame["frame_id"] for frame in result["frames"]] == ["decoded-000000000", "decoded-000000002"]
+    assert result[geometry.VIEWS_WITHOUT_DEPTH] == [{
+        "frame_id": "decoded-000000001", "view_index": 1, "reason": "atlas_source_geometry_no_valid_depth",
+        # The crop removed the top and bottom model rows; the depth was there, the confidence was not.
+        "inside_pixel_fraction": pytest.approx(12 / 14), "positive_depth_fraction": 1.0,
+        "positive_confidence_fraction": 0.0}]
+    assert not (tmp_path / "atlas_source_geometry" / "geometry" / "000001.npz").exists()
+    # The views kept lift exactly as before, under their own view index; nothing stands in for the one left out.
+    for position, index in enumerate((0, 2)):
+        frame = result["frames"][position]
+        assert frame["geometry_path"].endswith(f"geometry/{index:06d}.npz")
+        with np.load(frame["geometry_path"]) as data:
+            mask = data["valid_mask"]
+        np.testing.assert_allclose(lifted(result, position, mask), 1.25 * expected_world(index, mask),
+                                   rtol=1e-5, atol=1e-5)
+    loaded = geometry.load_atlas_source_geometry(manifest_path=Path(result["manifest_path"]), inputs=inputs)
+    assert [frame["frame_id"] for frame in loaded["frames"]] == ["decoded-000000000", "decoded-000000002"]
+    # A manifest whose frames are not the inputs' less the views it names is still refused.
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    del manifest[geometry.VIEWS_WITHOUT_DEPTH]
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    Path(result["manifest_path"]).write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="atlas_source_geometry_frame_mismatch"):
+        geometry.load_atlas_source_geometry(manifest_path=Path(result["manifest_path"]), inputs=inputs)
+
+
+def test_a_geometry_that_kept_every_view_names_none_left_out(tmp_path):
+    build(tmp_path)
+    result = geometry.atlas_source_geometry(geometry_root=tmp_path)
+    assert len(result["frames"]) == 3 and geometry.VIEWS_WITHOUT_DEPTH not in result
+
+
+def test_the_step_refuses_only_when_fewer_views_keep_depth_than_a_source_geometry_holds(tmp_path):
+    build(tmp_path, blind={0, 2})
+    with pytest.raises(ValueError, match="atlas_source_geometry_no_valid_depth"):
+        geometry.atlas_source_geometry(geometry_root=tmp_path)
+    assert not (tmp_path / "atlas_source_geometry" / "source_geometry.json").exists()
 
 
 def test_rerun_reuses_the_result_and_a_changed_scale_conflicts(tmp_path):
