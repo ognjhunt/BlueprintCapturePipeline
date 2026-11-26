@@ -437,8 +437,9 @@ def test_the_disclosure_records_a_supplied_mesh_with_no_provider_and_names_the_p
 
 # --- the company's package: the model's own file, its credit and its license --------------------------------
 
-#: The model's own file and the job's object part, which is built from it; Google's own copyright notice, kept.
-CREDIT = ("- scene/files/library_model.usda and object.usdz: Sterilite Storage Tote, Blue by Google (Copyright 2020 "
+#: The model's own file, the job's object part, which is built from it, and the layer of its simulated variations;
+#: Google's own copyright notice, kept.
+CREDIT = ("- scene/files/library_model.usda, object.usdz and variations.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 "
           "Google LLC.), from Google Scanned Objects "
           f"({API}/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 "
           "(https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ and scaled it to fit "
@@ -542,8 +543,10 @@ def _job_with_a_library_object(tmp_path: Path):
 
 
 #: Every file a company receives holding the model's geometry, by the state of the model's own file at packaging.
-HOLDING = {"kept": ["object.usdz", "scene/files/library_model.usda", "scene/room_collision.usdc"],
-           "deleted": ["object.usdz", "scene/room_collision.usdc"], "changed": ["object.usdz", "scene/room_collision.usdc"]}
+# ``variations.usda`` composes the object with its simulated variations (``website_object_variations``): named too.
+HOLDING = {"kept": ["object.usdz", "scene/files/library_model.usda", "scene/room_collision.usdc", "variations.usda"],
+           "deleted": ["object.usdz", "scene/room_collision.usdc", "variations.usda"],
+           "changed": ["object.usdz", "scene/room_collision.usdc", "variations.usda"]}
 
 
 @pytest.mark.parametrize("model_file", ["kept", "deleted", "changed"])

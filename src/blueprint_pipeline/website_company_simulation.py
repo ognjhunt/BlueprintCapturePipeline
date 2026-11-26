@@ -29,7 +29,8 @@ company clip is published (``website_company_clip``):
 - every file is read with the shared outbound scan (``outbound_file_scan``: ids in both forms, account ids,
   keys, host paths, storage, file and web links, bare web addresses, and the text form of every binary USD
   layer) before the zip is made; a finding refuses the package (``refused``), naming the file and the kind;
-- the zip is deterministic (names in order, fixed times and modes), so the same inputs give the same digest; it
+- the zip is deterministic (names in order, fixed modes, every member dated by the capture's own date, never the
+  build's: ``website_company_member_date``), so the same inputs give the same digest; it
   goes to the private artifact store by digest under a name for the capture (withdrawal deletion finds every
   version by that name), the WebApp is told its identity through the signed ``company-simulation`` control
   operation and reads it through the signed ``/api/live-pipeline/website-company-simulations`` route.
@@ -54,6 +55,7 @@ import os
 import re
 import shutil
 import stat
+import textwrap
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -72,10 +74,12 @@ from .website_atlas_preview_store import capture_name_matches_request, capture_w
 from . import website_half_preparation as half_preparation
 from . import website_destination_unheld as unheld
 from . import website_library_notes as library_notes
+from . import website_object_variations as variations
 from .website_half_preparation import (COLLISION_ONLY, THRESHOLDS_ASSUMED, THRESHOLDS_CONFIRMED_LATER, generated_patch,
                                        look_views, surface_estimated)
 from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
+from .website_company_member_date import ZIP_EPOCH, member_date
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +129,9 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look is written
 #: again from its source splat with the fixed writer and also ships as a standard 3DGS PLY. v4 (2026-11-21): a plain
 #: README. v5 (2026-11-25): plain zip headers; ZIP64 in the local header alone made macOS refuse the zip (Error 640).
-BUILDER_REVISION = "website_company_simulation_builder.v5"
+#: v6 (2026-11-25): members dated by the capture, not 1980; an object placed where its box meets the room says so;
+#: the object's simulated variations (``variations.usda``, ``variations.json``); the mass range's basis in words.
+BUILDER_REVISION = "website_company_simulation_builder.v6"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -156,8 +162,7 @@ JOINT_AS_AUTHORED = ("The joint's range is from the object's authored file and t
 #: The same, for a half whose rule is withheld (``RULE_WITHHELD_REASONS``): no rule, so no success interval.
 JOINT_AS_AUTHORED_NO_RULE = "The joint's range is from the object's authored file; no simulator moved the joint."
 PHYSICS_CHECK_WORDS = {
-    "isaac_sim": (),
-    "not_run": (NO_SIMULATOR,),
+    "isaac_sim": (), "not_run": (NO_SIMULATOR,),
     "not_run_static_check_passed": (STATIC_CHECK_PASSED, NO_SIMULATOR),
     "not_run_joint_as_authored": (NO_SIMULATOR, JOINT_AS_AUTHORED),
     "not_run_joint_as_authored_no_rule": (NO_SIMULATOR, JOINT_AS_AUTHORED_NO_RULE),
@@ -282,8 +287,6 @@ FIELDS_LEFT_OUT_LINES = ["  criteria_fields_left_out counts the fields Blueprint
                          "  could carry the site's own words, and any field outside the names it shares."]
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
-#: The half's rule holds the object's mass and friction as ranges estimated from the video.
-OBJECT_ESTIMATES_FROM_VIDEO = "The object's mass and friction in success_rule.json are ranges estimated from the video."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
@@ -297,7 +300,6 @@ RULE_WITHHELD_REASONS = frozenset({"website_native_task_profile_preparation_requ
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
-_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _RIGHTS_REFUSALS = re.compile(r"(source_revoked|consent_revoked|consent_expired|website_capture_withdrawn"
                               r"|capture_revoked_or_expired|website_company_simulation_not_permitted"
@@ -595,12 +597,12 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
             continue
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
-                                  "refusal": None, **notes,
-                                  **({"generated_patch": generated} if generated else {}),
+                                  "refusal": None, **notes, **({"generated_patch": generated} if generated else {}),
                                   **({"look_views": True} if look else {}),
                                   **({"surface_estimated": True} if capture is not None and "room" in notes
                                      and surface_estimated(capture) else {}), **told,
                                   **({"thresholds_assumed": True} if assumed else {}),
+                                  **({"member_date": member_date(capture)} if capture is not None else {}),
                                   **({"thresholds_confirmed_later": True} if confirmed else {}),
                                   **(build_plan_notes(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
@@ -770,8 +772,7 @@ def physics_check(packet: Path, plan: Mapping[str, Any], *, rule_withheld: bool 
 
 def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKAGE_BYTES) -> str:
     """Names this package: the files' digests, their placements, the success rule, the builder and the cap."""
-    return canonical_digest({
-        "builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
+    return canonical_digest({"builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
         "files": {prim: {key: row[key] for key in ("sha256", "size_bytes", "suffix", "placement")}
                   for prim, row in sorted(source["files"].items())},
         "rule": source.get("rule"), "axis": source.get("axis"), "refusal": source.get("refusal"),
@@ -781,9 +782,10 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "not_filled_in",
                                         "size_from_its_points",
-                                        "size_disagrees_with_published", "destination_overhang", "library_models",
+                                        "size_disagrees_with_published", "destination_overhang",
+                                        "destination_box_meets_room", "member_date", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
-                                        "object_source", "object_shape")
+                                        "object_source", "object_shape", "variation_evidence", "mass_basis")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1205,8 +1207,6 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
               "video, not measurements. A result in this simulation is not a promise of what a robot does at the",
               "site, and says nothing about safety. No robot is included: bring your own."]
-    import textwrap
-
     notes = [*(source.get("plan_notes") or []), *([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
              *([PLY_LEFT_OUT] if source.get("ply_left_out") and not source.get("look_left_out") else []),
              *([LOOK_AS_FIRST_WRITTEN, *([ROTATIONS_STORED_WRONG] if any(row["first_rotations_scrambled"]
@@ -1230,6 +1230,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),
              *([SIZE_DISAGREES_WITH_PUBLISHED_NOTE] if source.get("size_disagrees_with_published") else []),
              *([DESTINATION_OVERHANG_NOTE] if source.get("destination_overhang") else []),
+             *([unheld.BOX_MEETS_ROOM_NOTE] if source.get("destination_box_meets_room") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
@@ -1245,10 +1246,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
-               if room is not None else []),
-             *([NO_RULE] if withheld else []),
+               if room is not None else []), *([NO_RULE] if withheld else []),
              *half_preparation.object_note(source),
-             *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
+             *half_preparation.estimates_note(source),  # where the mass range comes from; friction's default
              *(([THRESHOLDS_CONFIRMED_LATER] if source.get("thresholds_confirmed_later") else [THRESHOLDS_ASSUMED])
                if source.get("thresholds_assumed") and source.get("rule") and room is None else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
@@ -1256,7 +1256,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     for note in notes:
         lines += textwrap.wrap(note, width=100, initial_indent="- ", subsequent_indent="  ",
                                break_long_words=False, break_on_hyphens=False)
-    lines += [*library_notes.readme_lines(source), "", "Terms", "",
+    lines += [*variations.readme_lines(source), *library_notes.readme_lines(source), "", "Terms", "",
               "Use this package only to decide whether you can do this job. Do not pass it on and do not use it",
               "to train software. Blueprint may ask you to delete it; then delete every copy.", ""]
     return "\n".join(lines)
@@ -1342,8 +1342,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
     from .scene_package_stage import StageRefused, write_stage
     output.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=STAGING + "-", dir=output.parent))
-    staging, scratch = work / "package", work / "scan"
-    partial = work / "simulation.zip.partial"
+    staging, scratch, partial = work / "package", work / "scan", work / "simulation.zip.partial"
     staging.mkdir(mode=0o750)
     scratch.mkdir(mode=0o700)
     try:
@@ -1400,11 +1399,11 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
                                       for prim, offset in sorted(offsets.items())}
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
+        varied = variations.write(source, staging, placed)  # each object's simulated variations, said to be so
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
-        (staging / "README.txt").write_text(_readme({**source, **credited}, placed, [*names, "README.txt"], units,
-                                                    offsets, plys, first_written),
-                                            encoding="utf-8")
+        (staging / "README.txt").write_text(_readme({**source, **credited, **varied}, placed, [*names, "README.txt"],
+                                                    units, offsets, plys, first_written), encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
@@ -1418,7 +1417,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for name in names:
-                info = zipfile.ZipInfo(name, date_time=_FIXED_TIME)
+                info = zipfile.ZipInfo(name, date_time=tuple(source.get("member_date") or ZIP_EPOCH))
                 info.compress_type, info.create_system, info.external_attr = zipfile.ZIP_DEFLATED, 3, 0o100644 << 16
                 info.file_size = (staging / name).stat().st_size
                 with (staging / name).open("rb") as stream, archive.open(info, "w") as member:

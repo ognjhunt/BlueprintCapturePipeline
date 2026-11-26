@@ -45,6 +45,10 @@ CREDIT = ("- {files}: {title} by {author}{copyright}, from {library} ({link}), u
 CARVE_OUT = ("These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares "
              "this package under do not restrict them.")
 USD_SUFFIXES = (".usd", ".usda", ".usdc", ".usdz")
+#: The layer of the job's objects' simulated variations (``website_object_variations.LAYER_FILE``, named here: that
+#: module imports this one). It holds no geometry, but its variants change the object built from the model, so a
+#: package that ships it names it in the model's credit.
+VARIATIONS_FILE = "variations.usda"
 
 
 def _sha256(path: Path) -> str | None:
@@ -218,14 +222,15 @@ def _uses(staging: Path, path: Path) -> set[str]:
 
 def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -> list[str]:
     """Every shipped file holding the library model's geometry, its own file first when it ships: the job's object
-    part and the USD layers it uses, and any other shipped USD file with a mesh of the model's topology (read from
-    its own file, or as recorded when it was written). Empty without a model."""
+    part and the USD layers it uses, any other shipped USD file with a mesh of the model's topology (read from its
+    own file, or as recorded when it was written), and the layer of its simulated variations (``VARIATIONS_FILE``).
+    Empty without a model."""
     rows = shipped(source)
     if not rows:
         return []
     staging = Path(staging)
     first = [str(row["file"]) for row in rows if row.get("file") and (staging / str(row["file"])).is_file()]
-    names = set(first)
+    names = set(first) | ({VARIATIONS_FILE} if (staging / VARIATIONS_FILE).is_file() else set())
     for prim, row in (source.get("files") or {}).items():
         if isinstance(row, Mapping) and row.get("role") == "task_object" and prim in placed:
             names |= _uses(staging, staging / placed[prim])
@@ -256,6 +261,7 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
 
 
 __all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
+           "VARIATIONS_FILE",
            "changes", "credit",
            "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
            "topology_digest"]

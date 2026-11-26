@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import website_library_notes as library_notes
+from . import website_object_variations as object_variations
 from .atlas_automation_plan import (GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK,
                                     SCENE_COMPLETION_NOT_ADMITTED)
 from .decision_evidence_contracts import canonical_digest
@@ -172,9 +173,46 @@ def half_preparation(capture_root: Path, record: Mapping[str, Any]) -> tuple[dic
 
 
 def object_estimates(preparation: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The object's mass and friction ranges as the preparation estimated them from the video, when recorded."""
+    """The object's mass and friction ranges as the preparation recorded them (``physics.bounds``), when it did."""
     bounds = (preparation.get("physics") or {}).get("bounds") if isinstance(preparation.get("physics"), Mapping) else None
     return bounds if isinstance(bounds, Mapping) else None
+
+
+#: Where the rule's mass range (``object_estimates_from_video.mass_kg``: the key is a contract and keeps its name) comes
+#: from, said in the README (``estimates_note``): the object's size in the video times typical densities
+#: (``website_task_preparation.screen_physics``, and a jointed body's density prior), unless the preparation says the
+#: model's published weight set it (``physics.mass_authority``, ``website_articulated_mass``) or the object was
+#: designed for a test (``website_synthetic_subject``). Its friction range is never read from the video: it is
+#: Blueprint's standard default (``PHYSICS_PRIORS``, the jointed and designed objects' own fixed ranges).
+MASS_WORDS = {"video_size": "comes from its size in the video and typical densities",
+              "published": "comes from the published weight of its model",
+              "partly_published": ("comes partly from the published weights of its model and partly from its size in "
+                                   "the video and typical densities"),
+              "designed": "is the one Blueprint designed the object with"}
+FRICTION_DEFAULT = "its friction range is Blueprint's standard default"
+
+
+def mass_basis(preparation: Mapping[str, Any]) -> dict[str, str]:
+    """``mass_basis`` when the preparation's mass range is not the video's size times typical densities; else empty."""
+    physics = preparation.get("physics") if isinstance(preparation.get("physics"), Mapping) else {}
+    basis = ("designed" if physics.get("basis") == "synthetic_design"
+             else "published" if physics.get("mass_authority") == "manufacturer_published"
+             else "partly_published" if physics.get("mass_authority") == "mixed" else None)
+    return {"mass_basis": basis} if basis else {}
+
+
+def estimates_note(source: Mapping[str, Any]) -> list[str]:
+    """The README's sentence for the rule's mass and friction ranges (``object_estimates_from_video``), or none."""
+    shipped = (source.get("rule") or {}).get("object_estimates_from_video")
+    if not isinstance(shipped, Mapping) or not shipped:
+        return []
+    mass = "mass_kg" in shipped
+    friction = bool({"static_friction", "dynamic_friction"} & set(shipped))
+    words = [*([f"mass range in success_rule.json {MASS_WORDS[source.get('mass_basis') or 'video_size']}"]
+               if mass else []),
+             *([FRICTION_DEFAULT if mass else "friction range in success_rule.json is Blueprint's standard default"]
+               if friction else [])]
+    return ["The object's " + "; ".join(words) + "."]
 
 
 def success_basis(preparation: Mapping[str, Any]) -> dict[str, str] | None:
@@ -195,15 +233,17 @@ def success_basis(preparation: Mapping[str, Any]) -> dict[str, str] | None:
 
 def size_notes(preparation: Mapping[str, Any]) -> dict[str, bool]:
     """What the preparation says of the object's size (``subject_extent``) and where it rests: read from its own
-    points, an exact model's published size that disagrees, and a destination it overhangs (``destination_overhang``).
-    Empty when none, so its package says what it said before."""
+    points, an exact model's published size that disagrees, a destination it overhangs (``destination_overhang``), and
+    one whose other geometry stands in its box wherever it would rest (``destination_box_meets_room``). Empty when
+    none, so its package says what it said before."""
     extent = preparation.get("subject_extent")
     extent = extent if isinstance(extent, Mapping) else {}
     check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
-    overhang = preparation.get("destination_overhang")
+    overhang, met = preparation.get("destination_overhang"), preparation.get("destination_box_meets_room")
     return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
             **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
-            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
+            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {}),
+            **({"destination_box_meets_room": True} if isinstance(met, Mapping) and met.get("flag") else {})}
 
 
 def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:
@@ -276,8 +316,9 @@ def base_scene_notes(base: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str, Any]:
-    """Everything the half's own preparation and base scene say the package must tell, as the source's keys; plus
-    ``estimates`` and ``basis`` for its rule. Only ``library_refusal`` when that preparation cannot be read."""
+    """Everything the half's own preparation and base scene say the package must tell, as the source's keys (with what
+    its object's simulated variations rest on, ``website_object_variations.evidence``); plus ``estimates`` and
+    ``basis`` for its rule. Only ``library_refusal`` when that preparation cannot be read."""
     root = Path(capture_root)
     preparation, path = half_preparation(root, record)
     if preparation is None:
@@ -286,7 +327,9 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
     base = (_beside(root, path) if isinstance(record.get(FIELD), str) and path is not None else {}) \
         or handoff_base_scene(root)
     return {**base_scene_notes(base), **size_notes(preparation), **object_source(configuration),
-            **library_notes.credit(configuration, root), "estimates": object_estimates(preparation),
+            **library_notes.credit(configuration, root), **object_variations.evidence(preparation, root),
+            **mass_basis(preparation),
+            "estimates": object_estimates(preparation),
             "basis": success_basis(preparation)}
 
 

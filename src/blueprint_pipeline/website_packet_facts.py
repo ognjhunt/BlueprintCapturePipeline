@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_automation_plan import SCENE_COMPLETION_NOT_ADMITTED
-from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
-                                    OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED, SUPPORT_HEIGHT,
-                                    preparation_record_flags)
+from .atlas_scene_estimates import (DESTINATION_BOX_MEETS_ROOM, DESTINATION_OVERHANG,
+                                    OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS,
+                                    SUPPORT_GUESSED, SUPPORT_HEIGHT, preparation_record_flags)
 from . import website_destination_unheld as unheld
 
 SCHEMA_VERSION = "website_packet_facts.v1"
@@ -52,6 +52,7 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:surroundings_past_frame_budget": "The views of the room around the job's area were more views than the rebuild takes beside the job's area, and were left out. Any of the room around it in the simulation is generated from the footage of the job's area.",
     SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
     DESTINATION_OVERHANG: "No surface at the destination holds the object's whole footprint: it is placed with its centre over the surface and part of its footprint over the edge, as the overhang line says.",
+    DESTINATION_BOX_MEETS_ROOM: unheld.BOX_MEETS_ROOM_SENTENCE,
     OBJECT_SIZE_FROM_ITS_POINTS: "The object's masks also took in what lies under or behind it in some frames: Blueprint estimated its size from the video's points of the object that the frames agree on, as the object size line says.",
     OBJECT_SIZE_DISAGREES_WITH_PUBLISHED: "The published size of the object's exact model disagrees with the size estimated from the video; the simulation keeps the video's estimate.",
     "scene_estimate:destination_surface_estimated": "The destination shelf or surface did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video and is in the collision file, not in the look.",
@@ -74,6 +75,18 @@ NOT_FILLED_IN_SENTENCES = {
     "scene_estimate:surroundings_not_connected": "Only the job's area was filmed in views that connect; the views of the room around it were left out.",
     "scene_estimate:surroundings_past_frame_budget": "The views of the room around the job's area were more views than the rebuild takes beside the job's area, and were left out.",
 }
+#: ``scene_estimate:destination_guessed`` marks a goal that is Blueprint's choice, never the site's named place
+#: (``website_destination_area.choose_destination``: every basis but ``named_region``). Its sentence above holds only
+#: where the site's sentence named nowhere to put the object: the harness's farthest spot on the surface it starts on
+#: (``website_task_preparation``'s relocation ``no_destination_beyond_start_support``). Where the sentence named the
+#: destination, only where on it (and, for a surface that was itself a best guess among several in the video,
+#: ``surface_guess``, which surface it is) was Blueprint's: job move-the-lamp-2 names the glass shelf on the wall.
+DESTINATION_NAMED_SENTENCES = {
+    "spot": "The site's sentence names where the object goes; the spot on that surface where the goal is set is "
+            "Blueprint's choice.",
+    "surface": "The site's sentence names where the object goes; which surface in the video it is, and the spot on "
+               "it where the goal is set, are Blueprint's best guess."}
+NO_DESTINATION_NAMED = "no_destination_beyond_start_support"
 #: Estimates recorded for Blueprint's own checks that say nothing a company can act on: never shown on its page.
 UNSAID = frozenset({"scene_estimate:review_citations_dropped"})
 #: Whether the job's object keeps its shape when handled (``task_profile_contracts.task_object_rigidity``, on the
@@ -398,10 +411,25 @@ def measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[s
     if _mapping(_mapping(base_scene).get("scene_completion")).get("generated_geometry_rejected") \
             == SCENE_COMPLETION_NOT_ADMITTED:
         codes.add(SCENE_COMPLETION_NOT_ADMITTED)
-    words = {**ESTIMATE_SENTENCES, **(NOT_FILLED_IN_SENTENCES if SCENE_COMPLETION_NOT_ADMITTED in codes else {})}
+    words = {**ESTIMATE_SENTENCES, **(NOT_FILLED_IN_SENTENCES if SCENE_COMPLETION_NOT_ADMITTED in codes else {}),
+             **destination_guessed_words(prep)}
     estimated += [line(words.get(code, "Another estimate the scene rests on, not yet described in words."))
                   for code in sorted(codes - UNSAID)]
     return measured, estimated
+
+
+def destination_guessed_words(preparation: Mapping[str, Any]) -> dict[str, str]:
+    """The ``destination_guessed`` sentence for a goal chosen on a destination the site's sentence named
+    (``DESTINATION_NAMED_SENTENCES``), read from the preparation's own choice record; empty (the sentence that the
+    site named no place) where the harness chose a spot because it named none, or where no record says."""
+    choice = _mapping(preparation.get("destination_choice"))
+    reason = _mapping(preparation.get("destination_relocation")).get("reason")
+    if "scene_estimate:destination_guessed" not in (choice.get("flags") or []) or choice.get("basis") not in (
+            "grounded_centre", "start_surface_farthest_spot") or (
+            choice.get("basis") == "start_surface_farthest_spot" and reason in (None, NO_DESTINATION_NAMED)):
+        return {}
+    kind = "surface" if choice.get("surface_guess") else "spot"
+    return {"scene_estimate:destination_guessed": DESTINATION_NAMED_SENTENCES[kind]}
 
 
 def _inside(root: Path, value: Any) -> Path | None:

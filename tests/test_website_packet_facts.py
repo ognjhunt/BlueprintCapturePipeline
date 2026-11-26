@@ -320,3 +320,39 @@ def test_an_unknown_cause_says_nothing_about_why_and_the_words_keep_the_scorers_
     assert unheld.sentence("a builder's own words", "x") is None and unheld.sentence(None, "x") is None
     texts = _texts(facts.measured_and_estimated({**LAMP, "destination_unheld": {"cause": "free text"}}, None, None)[1])
     assert not any("could not place" in text for text in texts)
+
+
+def _choice(basis: str, **extra):
+    return {"schema_version": "website_destination_choice.v1", "basis": basis,
+            "flags": ["scene_estimate:destination_guessed"], **extra}
+
+
+def test_a_goal_set_on_the_destination_the_site_named_never_says_it_named_no_place() -> None:
+    """Job move-the-lamp-2 names the glass shelf on the wall; only the spot on it where the goal is set was
+    Blueprint's (``grounded_centre``, its replayed preparation on 25 Nov). The page said "The site's sentence named
+    no place to put the object", which was false there; it says that only where the sentence named nowhere (the
+    harness's farthest spot on the surface the object starts on, ``no_destination_beyond_start_support``)."""
+    named_none = facts.ESTIMATE_SENTENCES["scene_estimate:destination_guessed"]
+    spot, surface = facts.DESTINATION_NAMED_SENTENCES["spot"], facts.DESTINATION_NAMED_SENTENCES["surface"]
+    cases = [
+        # The lamp: the destination it names, the goal at the grounded centre of the estimated shelf.
+        ({"destination_choice": _choice("grounded_centre")}, spot),
+        # The surface itself a best guess among several in the video: which one, and where on it.
+        ({"destination_choice": _choice("grounded_centre", surface_guess="best_supported_guess")}, surface),
+        # Named, but the grounded place lay under the object's start: moved to the farthest spot, still named.
+        ({"destination_choice": _choice("start_surface_farthest_spot"),
+          "destination_relocation": {"reason": "grounded_destination_centre_overlapped_start"}}, spot),
+        # Named nowhere: the harness's spot on the surface it starts on, as the page always said.
+        ({"destination_choice": _choice("start_surface_farthest_spot"),
+          "destination_relocation": {"reason": "no_destination_beyond_start_support"}}, named_none),
+        # No record says which: the sentence as before.
+        ({"destination_choice": _choice("start_surface_farthest_spot")}, named_none),
+    ]
+    for record, said in cases:
+        texts = _texts(facts.measured_and_estimated({**LAMP, **record}, None, None)[1])
+        assert said in texts, record
+        assert not ({named_none, spot, surface} - {said}) & set(texts), record
+    # A site's picked place, or the place its sentence named, is no guess and says none of these.
+    texts = _texts(facts.measured_and_estimated({**LAMP, "destination_choice": {"basis": "named_region", "flags": []}},
+                                                None, None)[1])
+    assert not {named_none, spot, surface} & set(texts)

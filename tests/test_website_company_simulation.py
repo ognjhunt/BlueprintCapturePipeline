@@ -7,6 +7,7 @@ host is reached, and nothing is paid for.
 # Covers: src/blueprint_pipeline/website_company_simulation.py
 # Covers: src/blueprint_pipeline/website_company_look.py
 # Covers: src/blueprint_pipeline/outbound_file_scan.py
+# Covers: src/blueprint_pipeline/website_company_member_date.py
 from __future__ import annotations
 
 import hashlib
@@ -340,6 +341,7 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
     with zipfile.ZipFile(package) as archive:
         names = archive.namelist()
         assert names == sorted(names)
+        # This capture's records carry no date: every member keeps the zip format's first one (``ZIP_EPOCH``).
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
         # Plain headers that agree (2026-11-25: macOS's Archive Utility refused a package whose local headers named a
         # ZIP64 field its central directory did not have): no member is in ZIP64, nor needs a ZIP64 reader.
@@ -362,8 +364,9 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
         archive.extractall(unpacked)
     textures = [name for name in names if name.startswith("scene/files/")]
     assert len(textures) == 1 and textures[0].endswith(".png")
+    # The job's object ships with its simulated variations (``website_object_variations``).
     assert set(names) - set(textures) == {"README.txt", "scene.usda", "scene/room.usdc", "scene/room_collision.usdc",
-                                          "object.usdz", "success_rule.json"}
+                                          "object.usdz", "success_rule.json", "variations.usda", "variations.json"}
     assert record["files"] == names
     # Every file passes the shared scan, with every id of the job looked for.
     literals = scan.literal_forms([(REQUEST, "a job id"), (CAPTURE, "a job id"), (TASK, "a job id"),
@@ -401,6 +404,62 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     again = sim.build_package(source, tmp_path / "again.zip", literals=sim.secret_literals(job.capture, source))
     assert again["digest"] == record["digest"]
+
+
+#: Job move-the-lamp-2's capture (``raw/manifest.json``): 2026-11-19 15:09:20.505 UTC, when the upload was received.
+LAMP_CAPTURE_MS = 1795100960505
+
+
+def test_members_carry_the_capture_s_own_date_and_the_same_inputs_give_the_same_bytes(job, tmp_path, monkeypatch):
+    """Finder showed every file of lamp-2's package as made on 1 January 1980 (25 Nov): each member now carries the
+    capture's own date, from its manifest, never the build's, so the same inputs still give the same digest."""
+    import time
+
+    manifest = json.loads((job.capture / "raw/manifest.json").read_text())
+    _write(job.capture / "raw/manifest.json", {**manifest, "capture_start_epoch_ms": LAMP_CAPTURE_MS,
+                                               "capture_start_epoch_ms_basis": "server_upload_received"})
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    record = world.delivered[0]
+    with zipfile.ZipFile(_package(job)) as archive:
+        assert {info.date_time for info in archive.infolist()} == {(2026, 11, 19, 15, 9, 20)}
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source["member_date"] == (2026, 11, 19, 15, 9, 20)
+    literals = sim.secret_literals(job.capture, source)
+    # Built again later, with the clock somewhere else entirely: the same bytes.
+    monkeypatch.setattr(time, "time", lambda: 4_102_444_800.0)  # 2100-01-01
+    again = sim.build_package(source, tmp_path / "again.zip", literals=literals)
+    assert again["digest"] == record["digest"]
+    # Another capture date is another package: its revision and its bytes.
+    _write(job.capture / "raw/manifest.json", {**manifest, "capture_start_epoch_ms": LAMP_CAPTURE_MS + 86_400_000})
+    moved = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert moved["member_date"] == (2026, 11, 20, 15, 9, 20)
+    assert sim.simulation_revision(moved) != sim.simulation_revision(source)
+    assert sim.build_package(moved, tmp_path / "moved.zip", literals=literals)["digest"] != record["digest"]
+
+
+def test_the_member_date_falls_back_through_the_capture_s_inputs_and_never_to_now(tmp_path):
+    from blueprint_pipeline import website_company_member_date as dates
+
+    root = tmp_path / "capture"
+    assert dates.member_date(None) == dates.member_date(root) == dates.ZIP_EPOCH == (1980, 1, 1, 0, 0, 0)
+    # The rights' recorded time, when no record gives the capture's start.
+    _write(root / "pipeline/website_task_context.json",
+           {"capture_rights": {"recorded_at_iso": "2026-11-19T15:09:16.758Z"}})
+    assert dates.member_date(root) == (2026, 11, 19, 15, 9, 16)
+    # The delivery's descriptor before it, and the capture's own manifest before both.
+    _write(root / "capture_descriptor.json", {"metadata": {"media_metadata": {"capture_start_epoch_ms": 1795000000000}}})
+    assert dates.member_date(root) == (2026, 11, 18, 11, 6, 40)
+    _write(root / "raw/manifest.json", {"capture_start_epoch_ms": LAMP_CAPTURE_MS})
+    assert dates.member_date(root) == (2026, 11, 19, 15, 9, 20)
+    # A value a zip cannot date (1 ms after 1970, as a browser fixture sends), or that is no time, is passed over.
+    for bad in (1, True, "1795100960505", float("nan"), 10 ** 20):
+        _write(root / "raw/manifest.json", {"capture_start_epoch_ms": bad})
+        assert dates.member_date(root) == (2026, 11, 18, 11, 6, 40), bad
+    # A rights time with no zone is not read as UTC; an unreadable file is passed over.
+    (root / "capture_descriptor.json").write_text("{not json")
+    _write(root / "pipeline/website_task_context.json", {"capture_rights": {"recorded_at_iso": "2026-11-19T15:09:16"}})
+    assert dates.member_date(root) == dates.ZIP_EPOCH
 
 
 def test_published_once_then_current_without_rebuilding_or_resending(job, monkeypatch):
@@ -923,11 +982,38 @@ def test_the_object_estimates_from_the_video_go_in_the_rule_and_are_left_out_whe
         rule = json.loads(archive.read("success_rule.json"))
         readme = archive.read("README.txt").decode()
     assert rule["object_estimates_from_video"] == {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]}
-    assert "estimated from the video" in readme
+    # Only the mass range comes from the video (its size times typical densities, ``screen_physics``); the friction
+    # range is Blueprint's standard default (``PHYSICS_PRIORS``). The key keeps its name: it is a contract.
+    said = ("The object's mass range in success_rule.json comes from its size in the video and typical densities; "
+            "its friction range is Blueprint's standard default.")
+    assert said in " ".join(readme.split()) and "ranges estimated from the video" not in readme
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     (job.capture / "pipeline/website_scene_preparation/preparation.json").unlink()
     assert "object_estimates_from_video" not in sim.simulation_source(job.capture, queue_root=job.queue)["rule"]
     assert source["rule"]["object_estimates_from_video"]
+
+
+@pytest.mark.parametrize(("physics", "shipped", "said"), [
+    ({"basis": "estimated"}, {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]},
+     ("The object's mass range in success_rule.json comes from its size in the video and typical densities; its "
+      "friction range is Blueprint's standard default.")),
+    ({"basis": "estimated", "mass_authority": "manufacturer_published"}, {"mass_kg": [9.0, 11.0]},
+     "The object's mass range in success_rule.json comes from the published weight of its model."),
+    ({"basis": "estimated", "mass_authority": "mixed"}, {"mass_kg": [9.0, 11.0], "dynamic_friction": [0.2, 0.6]},
+     ("The object's mass range in success_rule.json comes partly from the published weights of its model and partly "
+      "from its size in the video and typical densities; its friction range is Blueprint's standard default.")),
+    ({"basis": "synthetic_design"}, {"mass_kg": [0.3, 0.4], "static_friction": [0.5, 0.7]},
+     ("The object's mass range in success_rule.json is the one Blueprint designed the object with; its friction "
+      "range is Blueprint's standard default.")),
+    ({"basis": "estimated"}, {"static_friction": [0.2, 0.9]},
+     "The object's friction range in success_rule.json is Blueprint's standard default."),
+])
+def test_the_readme_says_where_the_mass_range_comes_from_and_that_friction_is_a_default(physics, shipped, said):
+    from blueprint_pipeline import website_half_preparation as halves
+
+    source = {**halves.mass_basis({"physics": physics}), "rule": {"object_estimates_from_video": shipped}}
+    assert halves.estimates_note(source) == [said]
+    assert halves.estimates_note({"rule": {}}) == [] and halves.estimates_note({}) == []
 
 
 def test_the_rule_says_which_numbers_the_site_s_words_set_and_never_quotes_them(job):
@@ -2470,24 +2556,30 @@ def test_gap_views_not_admitted_are_named_in_a_package_with_the_job_s_object(job
         assert readme.count(sim.NOT_FILLED_IN) == (1 if expected else 0)
 
 
-@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang"])
+@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang", "box_meets_room"])
 def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
     """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):
-    the README says so in one sentence, and says when the exact model's published size disagrees with it, and when
-    it overhangs its destination (``website_destination_overhang``). A job whose box fit its masks and whose
-    destination holds it records nothing and its package is unchanged, at the same revision."""
+    the README says so in one sentence, and says when the exact model's published size disagrees with it, when
+    it overhangs its destination (``website_destination_overhang``), and when its box meets the room wherever it would
+    rest there (job move-the-lamp-2, placed all the same). A job whose box fit its masks and whose destination holds it
+    records nothing and its package is unchanged, at the same revision."""
+    from blueprint_pipeline.website_destination_unheld import BOX_MEETS_ROOM_NOTE
     before = sim.simulation_source(job.capture, queue_root=job.queue)
     preparation = job.capture / "pipeline" / "website_scene_preparation"
     if extent is not None:
-        record = {"status": "kept" if extent in ("kept", "overhang") else "from_its_own_points",
+        record = {"status": "kept" if extent in ("kept", "overhang", "box_meets_room") else "from_its_own_points",
                   **({"published_cross_check": {"status": "disagrees"}} if extent == "disagrees" else {})}
         _write(preparation / "preparation.json", {"subject_extent": record, **(
-            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {})})
+            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {}),
+            **({"destination_box_meets_room": {"flag": "scene_estimate:destination_box_meets_room",
+                                               "cause": "other_geometry_in_its_box_wherever_it_would_rest"}}
+               if extent == "box_meets_room" else {})})
         handoff = {"status": "intake_ready", "preparation_path": str(preparation / "preparation.json")}
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
         _write(preparation / "handoff.json", handoff)
     expected = {"size_from_its_points": extent in ("from_its_own_points", "disagrees"),
-                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang"}
+                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang",
+                "destination_box_meets_room": extent == "box_meets_room"}
     assert sim.size_notes(job.capture) == {key: True for key, value in expected.items() if value}
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not any(expected.values()))
@@ -2498,6 +2590,8 @@ def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_
     assert (sim.SIZE_DISAGREES_WITH_PUBLISHED_NOTE in readme) is expected["size_disagrees_with_published"]
     assert readme.count("points of the object") == (1 if expected["size_from_its_points"] else 0)
     assert (sim.DESTINATION_OVERHANG_NOTE in readme) is expected["destination_overhang"]
+    assert (" ".join(BOX_MEETS_ROOM_NOTE.split()) in readme) is expected["destination_box_meets_room"]
+    assert "could not place" not in readme  # a package with the object never says it could not be placed
 
 
 # --- a look written again from its source splat, and its PLY ------------------------------------------------------
