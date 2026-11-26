@@ -25,7 +25,7 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_scene_intent_contracts as contracts, website_build_plan
 from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
-from blueprint_pipeline.task_evaluation_scene_intent_contracts import SceneIntakeError, validate_request
+from blueprint_pipeline.task_evaluation_scene_intent_contracts import SceneIntakeError, task_fields_not_read, validate_request
 from blueprint_pipeline.website_preparation_request import additional_objects, intake_request, request_subject
 from tests.test_task_evaluation_scene_intake import articulated_request, request
 
@@ -151,7 +151,9 @@ def test_further_objects_on_any_other_task_are_refused():
 
 
 @pytest.mark.parametrize("articulated", [False, True], ids=["pick_and_place", "articulated"])
-def test_a_task_key_no_release_reads_is_refused_and_every_key_one_reads_is_kept(articulated):
+def test_a_task_key_no_release_reads_is_kept_and_flagged_never_refused(articulated, caplog):
+    """Only privacy, rights and money stop a job (a review of PR #3754): a key this release does not read is kept as
+    sent and flagged ``scene_intake_task_fields_not_read``, and every key one reads is kept without a flag."""
     def base():
         value = articulated_request() if articulated else request()
         value["execution"].update(purpose="scene_preparation", policy_candidates=[])
@@ -160,7 +162,15 @@ def test_a_task_key_no_release_reads_is_refused_and_every_key_one_reads_is_kept(
                       ("articulation" if not articulated else "destination", {"id": "tray"})):
         value = base()
         value["task"][key] = item
-        refused(value, "task_unknown_field")
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            assert validate_request(value, now=100) == value
+        assert task_fields_not_read(value["task"]) == [key]
+        assert [(row.getMessage(), row.fields) for row in caplog.records] == [("scene_intake_task_fields_not_read", [key])]
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        validate_request(base(), now=100)
+    assert caplog.records == [] and task_fields_not_read(base()["task"]) == []
     reuse = base()
     reuse["task"]["reuse_completed_stages"] = False
     assert validate_request(reuse, now=100) == reuse

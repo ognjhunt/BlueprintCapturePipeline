@@ -6,6 +6,7 @@ or mutation services. Issuance, reservations and recovery remain in intake.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections.abc import Mapping
@@ -17,6 +18,8 @@ from .validation_file_digests import note_consulted
 from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 
 from .task_family_scoring import FAMILY_ALIASES
+
+_LOG = logging.getLogger(__name__)
 
 #: A navigation job's website intake (``website_navigation_intake``): the robot walks to a goal in a scene
 #: kept as filmed. It names its navigation record's digests and no subject, support or destination, and it
@@ -105,6 +108,20 @@ def _validate_additional_objects(task: Mapping[str, Any]) -> None:
              "task_additional_object_test_environment_forbidden")
 
 
+def task_fields_not_read(task: Mapping[str, Any]) -> list[str]:
+    """The keys of a pick-and-place or articulated task this release does not read, sorted: kept as sent and flagged
+    (``scene_intake_task_fields_not_read``), never refused. Empty for a family or navigation task, checked exactly."""
+    strategy = task.get("strategy")
+    parts = {"pick_and_place": ("subject", "support", "destination", "success"),
+             "articulated_open_close": ("subject", "support", "articulation", "success")}.get(strategy)
+    if parts is None:
+        return []
+    read = {"task_id", "strategy", *parts, *TASK_OPTIONAL_FIELDS}
+    if strategy == "pick_and_place":
+        read.add(ADDITIONAL_OBJECTS_FIELD)
+    return sorted(str(key) for key in task if key not in read)
+
+
 def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     _require(set(value) == {"schema_version", "submission_id", "owner", "source", "task",
                             "execution", "consent"}, "request_fields_invalid")
@@ -163,9 +180,12 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     for key in required:
         _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
     if required:
-        # A key this release does not read is refused, never ignored (further objects: pick-and-place only, above).
-        _require(set(task) <= {"task_id", "strategy", *required, *TASK_OPTIONAL_FIELDS, ADDITIONAL_OBJECTS_FIELD},
-                 "task_unknown_field")
+        # A key this release does not read is kept and flagged, never a stop (only privacy, rights and money stop a
+        # job; a review of PR #3754). Further objects are not such a key: they are read and checked above.
+        unread = task_fields_not_read(task)
+        if unread:
+            _LOG.warning("scene_intake_task_fields_not_read", extra={"submission_id": value.get("submission_id"),
+                                                                     "fields": unread})
     if task["strategy"] == "articulated_open_close":
         _require(task["articulation"].get("joint_type") in ARTICULATION_JOINT_TYPES
                  and isinstance(task["articulation"].get("part_label"), str)
