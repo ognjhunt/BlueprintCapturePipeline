@@ -15,6 +15,7 @@ Offline: no provider, no network, nothing paid.
 # Covers: src/blueprint_pipeline/website_build_plan_notes.py
 # Covers: src/blueprint_pipeline/website_library_notes.py
 # Covers: src/blueprint_pipeline/website_half_preparation.py
+# Covers: src/blueprint_pipeline/website_packet_facts.py
 from __future__ import annotations
 
 import hashlib
@@ -352,6 +353,11 @@ def test_a_further_object_that_needs_artisan_fails_its_static_check_or_overlaps_
     assert [row["rank"] for row in record["left_in_scan"]] == [3, 4, 5]
     assert record["flags"] == [further.LEFT_IN_SCAN]
     assert further.LEFT_IN_SCAN in preparation_record_flags(value)
+    # The company's page says so in plain words, claiming no reason the flag does not carry.
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES
+    assert ESTIMATE_SENTENCES[further.LEFT_IN_SCAN] == (
+        "One or more of the job's other objects were not built as objects of their own: they are left as the scan "
+        "shows them, and the success rule does not score them.")
     # Only what was composed is in the request and the composed manifest.
     assert [row["rank"] for row in value["intake_request"]["task"]["additional_objects"]] == [2]
     composed = json.loads((tmp_path / "job" / "out" / "removal_manifest.composed.json").read_text())

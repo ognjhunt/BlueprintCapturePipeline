@@ -69,8 +69,10 @@ ESTIMATE_SENTENCES = {
     # The scene's generated gap views were not admitted (``atlas_scene_automation``, ``website_atlas_pipeline``):
     # the base scene's ``scene_completion``. The company package's README says the same words (``NOT_FILLED_IN``).
     SCENE_COMPLETION_NOT_ADMITTED: "Parts of the room the video did not show were not filled in.",
-    # A further object of a several-object job that was not rebuilt (``website_further_objects``).
-    "scene_estimate:further_object_left_in_scan": "Some of the job's other objects were not rebuilt (they need a paid model, or could not be placed or checked where the video shows them): they are left as the scan shows them, and the success rule does not score them.",
+    # A further object of a several-object job that was not built as its own object (``website_further_objects``). Its
+    # reasons are many (a paid model, a place or check that failed, a request that could not take it) and the flag
+    # carries none, so the sentence names none; the package's plan note says which and why.
+    "scene_estimate:further_object_left_in_scan": "One or more of the job's other objects were not built as objects of their own: they are left as the scan shows them, and the success rule does not score them.",
 }
 #: Where the gap views were not admitted nothing was generated, so the surroundings lines say only what was left out.
 NOT_FILLED_IN_SENTENCES = {
