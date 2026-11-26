@@ -58,8 +58,10 @@ Nice=19
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 IOWeight=10
-# One site's plan and, under the approval, its apply. A run killed here is recorded by the
-# next run as interrupted and backs off like any failure.
+# One site's plan and, under the approval, its apply. The plan starts reading no new run's
+# records after 25 minutes (website_capture_withdrawal_automatic.PLAN_READING_SECONDS) and the
+# next pass goes on from what it kept. A run killed here is recorded by the next run as
+# interrupted and backs off like any failure.
 TimeoutStartSec=45min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python

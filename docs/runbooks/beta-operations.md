@@ -861,6 +861,15 @@ acknowledgement within 10 business days and completion within 30 days
      none). If it cannot tell, it counts the host as busy;
    - plans at most one site, the one whose last attempt is oldest, and records
      the outcome beside the tombstone (below);
+   - keeps what each run's records name, under the report root's
+     `run-scan-cache/` (`website_withdrawal_run_scan_cache`), and reads a run's
+     records again only when they changed. A plan reads at least one run and
+     stops starting new ones 25 minutes into the pass; the site is then
+     `scanning`, and the next pass goes on from what was kept. The plan is the
+     same as one that read everything. Before this, the first plan on the host
+     read at least 9 GiB of run records (mostly the early trial's policy
+     canaries) and was killed at the 45-minute start timeout on each try
+     (2026-11-25);
    - deletes only under the owner's standing approval (below), through the
      deletion tool's own `--apply` path with the plan's exact digest.
 
@@ -914,6 +923,7 @@ latest plan is next to it, in `automatic_deletion_plan.json`.
 | `status` | Meaning | Do this |
 |---|---|---|
 | `planning`, `applying` | A pass is in this step. If the next pass finds this, the run was killed and it is recorded as `failed`, `interrupted_while_<step>`. | Nothing |
+| `scanning` | The plan stopped at its reading time. `run_scan` counts the runs it read and reused. It is planned again on the next pass, which goes on from what was kept. Not a failure. | Nothing |
 | `planned` | Nothing unresolved. `waiting_on` says what for: `standing_approval_absent`, `_invalid` or `_expired`, `cool_off`, `money_unsettled`, `host_busy`. | Owner: install or fix the approval. For money, wait. |
 | `unresolved` | The plan has `unresolved` copies. `unresolved_reasons` counts them by reason. | Read the plan; see "Make and read a plan". |
 | `legal_hold` | `legal_hold.json` holds the site. Nothing is deleted. | Nothing, until the hold is lifted |

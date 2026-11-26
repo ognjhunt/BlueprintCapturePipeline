@@ -19,8 +19,14 @@ Each pass, with no operator:
    beside the tombstone (``automatic_deletion_state.json``, the latest plan beside it):
    ``planning`` or ``applying`` before it starts (a run killed there is a failure the next
    pass records), then ``planned`` (with what it waits on), ``unresolved`` (with the reasons),
-   ``legal_hold``, ``failed`` (with the error and the next attempt), or ``applied``.
+   ``legal_hold``, ``failed`` (with the error and the next attempt), ``scanning`` or ``applied``.
    A failure backs off (1 h, 4 h, then 24 h) and is retried; nothing becomes terminal.
+   The plan keeps what each run's records name (``website_withdrawal_run_scan_cache``, under
+   the report root) and reads only the runs that changed since. It stops reading at
+   ``PLAN_READING_SECONDS`` into the pass, at a run's edge: the site is then ``scanning``, not
+   failed, and the next pass plans it again from what was kept. Before this, the first plan on
+   the host read about 9 GiB of run records and was killed at the unit's 45-minute start timeout
+   on every try (2026-11-25).
 4. It applies only under the owner's standing approval (``APPROVAL_PATH``, validated strictly
    by ``load_approval``), and only a plan in the approved policy class: an acknowledged
    withdrawal, no legal hold, nothing unresolved, the site's money settled (no screening
@@ -100,6 +106,10 @@ FAILING_ALERT_COUNT = 3
 # approval or its cool-off is taken as soon as both allow.
 REPLAN_SECONDS = 6 * 3600
 BLOCKED_ALERT_SECONDS = 72 * 3600
+# How far into a pass the plan may start reading another run's records (the unit's start timeout is
+# 45 minutes): what is left covers the rest of the plan and, under the approval, the apply, whose
+# re-plan reads only runs that changed meanwhile.
+PLAN_READING_SECONDS = 25 * 60
 # The privacy policy promises completion within 30 days; this leaves nine to act.
 OVERDUE_ALERT_SECONDS = 21 * 86400
 ALERT_REPEAT_SECONDS = 24 * 3600
@@ -429,6 +439,8 @@ def _due(row: Mapping[str, Any], approval: Mapping[str, Any], now: float) -> boo
         return True
     if state["status"] in {"failed", "incomplete"}:
         return now >= float(state.get("next_attempt_at_epoch") or 0)
+    if state["status"] == "scanning":
+        return True  # the plan stopped at its reading time; it goes on from what it kept, next pass
     if now >= float(state.get("last_attempt_at_epoch") or 0) + REPLAN_SECONDS:
         return True
     waiting = set(state.get("waiting_on") or ())
@@ -455,8 +467,15 @@ def _money(plan: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
 
 def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], approval_path: Path, now: float,
             resolution: Callable[[], Mapping[str, Any]], quiet: Callable[[], list[str]],
-            planner: Callable[..., dict[str, Any]], applier: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-    """Plan one site, and apply it when the standing approval's class allows; every outcome is recorded."""
+            planner: Callable[..., dict[str, Any]], applier: Callable[..., dict[str, Any]],
+            scan_deadline: float | None = None) -> dict[str, Any]:
+    """Plan one site, and apply it when the standing approval's class allows; every outcome is recorded.
+
+    ``scan_deadline`` (``time.monotonic``) reaches the plan only with a run scan cache in the
+    resolution: without one, a plan stopped part way would keep nothing and never finish.
+    """
+
+    from .website_withdrawal_run_scan_cache import ScanBudgetSpent
 
     site, previous = row["site"], row["state"] or {}
     state: dict[str, Any] = {
@@ -476,7 +495,9 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], approval_pat
             _write_state(site, state)
             return state
         resolved = dict(resolution())
-        plan = planner(capture_root=row["capture_root"], **resolved)
+        reading = {"scan_deadline": scan_deadline} if (
+            scan_deadline is not None and resolved.get("run_scan_cache") is not None) else {}
+        plan = planner(capture_root=row["capture_root"], **resolved, **reading)
         write_json(site / "website_withdrawal" / PLAN_FILENAME, plan)
         settled, money = _money(plan)
         reasons: dict[str, int] = {}
@@ -530,6 +551,10 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], approval_pat
                                  row.get("holder") == "provider_copies_not_deleted" for row in reasons)
                                  else REPLAN_SECONDS),
                              blocked_since_epoch=(previous.get("blocked_since_epoch") or now) if reasons else None)
+    except ScanBudgetSpent as stopped:
+        # Not a failure: every run read so far is kept, and the next pass plans the site again from there.
+        state.update(status="scanning", waiting_on=["run_records_being_read"], failure_count=0, last_error=None,
+                     run_scan=stopped.progress)
     except Exception as error:  # noqa: BLE001 - every failure is recorded and retried; nothing is terminal
         state = _failed(state, _error_code(error), now)
     _write_state(site, state)
@@ -604,7 +629,7 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
              action: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
     counts = dict.fromkeys(("total", "completed", "waiting", "not_yet_planned", "awaiting_owner_approval", "cool_off",
                             "unresolved", "money_unsettled", "legal_hold", "failing", "overdue", "incomplete",
-                            "complete", "complete_provider_retention_remains"), 0)
+                            "complete", "complete_provider_retention_remains", "scanning"), 0)
     sites = []
     overdue = {alert["target"] for alert in alerts if alert["code"] == "website_withdrawal_deletion_overdue"}
     for row in rows:
@@ -637,6 +662,7 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
         counts["money_unsettled"] += "money_unsettled" in waiting
         counts["legal_hold"] += status == "legal_hold"
         counts["failing"] += status == "failed"
+        counts["scanning"] += status == "scanning"
         counts["incomplete"] += status == "incomplete"
         counts["overdue"] += row["scene_id"] in overdue
         sites.append({"scene_id": row["scene_id"], "status": status or "not_planned",
@@ -674,11 +700,16 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
              planner: Callable[..., dict[str, Any]] | None = None,
              applier: Callable[..., dict[str, Any]] | None = None,
              site_index_root: Path | None = None, indexed_roots: Sequence[Path] = (),
-             index_budget: Mapping[str, Any] | None = None, backup_ledger: Path | None = None) -> dict[str, Any]:
+             index_budget: Mapping[str, Any] | None = None, backup_ledger: Path | None = None,
+             plan_reading_seconds: float | None = PLAN_READING_SECONDS) -> dict[str, Any]:
     """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted.
 
     ``backup_ledger`` is the state backup's ledger (default: ``control_plane_state_backup`` under its report
-    root); a site is finished only once no backup generation older than its deletion survives."""
+    root); a site is finished only once no backup generation older than its deletion survives.
+    ``plan_reading_seconds`` is how far into the pass the plan may start reading another run's records
+    (only with a run scan cache in the resolution; None: no limit)."""
+
+    started = time.monotonic()
 
     if planner is None or applier is None:
         from . import website_capture_withdrawal_deletion as deletion
@@ -718,11 +749,12 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         if due and not busy:
             row = due[0]
             state = _handle(row, approval=approval, approval_path=Path(approval_path), now=observed,
-                            resolution=resolution, quiet=quiet, planner=planner, applier=applier)
+                            resolution=resolution, quiet=quiet, planner=planner, applier=applier,
+                            scan_deadline=None if plan_reading_seconds is None else started + plan_reading_seconds)
             row.update(state=state, receipt=_receipt_view(row["site"], row["tombstone_digest"], backup_ledger))
             action = {"scene_id": row["scene_id"], "status": state["status"],
                       "waiting_on": state.get("waiting_on") or [], "last_error": state.get("last_error"),
-                      "deletion_status": state.get("deletion_status")}
+                      "deletion_status": state.get("deletion_status"), "run_scan": state.get("run_scan")}
         alerts = _alerts(rows, approval, problems, observed)
         summary = _summary(rows, approval=approval, busy=busy, problems=problems, alerts=alerts, action=action,
                            now=observed)
@@ -766,7 +798,7 @@ def _content_gc(index_root: Path, roots: Sequence[Path], *, report_root: Path, a
 
 _PROJECTED_COUNTS = ("total", "completed", "waiting", "not_yet_planned", "awaiting_owner_approval", "cool_off",
                      "unresolved", "money_unsettled", "legal_hold", "failing", "overdue", "incomplete",
-                     "complete", "complete_provider_retention_remains")
+                     "complete", "complete_provider_retention_remains", "scanning")
 
 
 def capacity_projection(summary: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -806,10 +838,12 @@ def _production_resolution() -> dict[str, Any]:
     bucket = str(os.getenv(SOURCE_BUCKET_ENV) or "").strip()
     from .website_capture_withdrawal_provider_copies import production_deleters
     from .website_capture_withdrawal_unclaimed import DEFAULT_ROOT as UNCLAIMED_ROOT
+    from .website_withdrawal_run_scan_cache import DIRNAME as RUN_SCAN_DIRNAME
 
     report_root = Path(os.getenv(REPORT_ROOT_ENV) or DEFAULT_REPORT_ROOT)
     return {"object_store": B2ObjectVersions.configured(), "unclaimed_handoff_root": UNCLAIMED_ROOT,
-            "site_index_root": report_root / SITE_INDEX_DIRNAME, "provider_copies": True,
+            "site_index_root": report_root / SITE_INDEX_DIRNAME, "run_scan_cache": report_root / RUN_SCAN_DIRNAME,
+            "provider_copies": True,
             "provider_deleters": production_deleters(),
             "cloud_storage": withdrawal.GoogleWebsiteCleanupStorage(bucket) if bucket else None}
 

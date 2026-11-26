@@ -57,7 +57,10 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
 
 The plan reads every run's JSON records once (streamed, any size), so it runs on a
 quiet host: by hand, or in its own bounded unit (``website_capture_withdrawal_automatic``,
-one site per hourly pass, nothing while a paid stage is live). Anything it cannot resolve fails
+one site per hourly pass, nothing while a paid stage is live). The unit keeps what each run's
+records name between plans (``website_withdrawal_run_scan_cache``) and reads again only the runs
+that changed; a plan that runs out of its time reading stops at a run's edge and the next pass goes
+on from what was kept. Anything it cannot resolve fails
 closed into ``unresolved`` (a link or special
 file in a run, an unreadable record, a run that also names another site, an
 offloaded run whose binding is unknown, an object outside the artifact bucket or
@@ -226,6 +229,13 @@ class _Scan:
                     self.other_sites.add(site.decode())
         for match in _PROVIDER.finditer(window):
             self.providers.add(match.group(1).decode())
+
+    def absorb(self, facts: Any) -> None:
+        """A run's kept facts (``website_withdrawal_run_scan_cache.Facts``), read as feeding its records reads them."""
+        self.named.update(token.decode() for token in facts.tokens & self.vocabulary)
+        self.other_sites.update(site.decode() for site in facts.sites
+                                if site != self.request_id and not site.startswith(self.request_id + b"."))
+        self.providers.update(provider.decode() for provider in facts.providers)
 
 
 def _regular(path: Path) -> os.stat_result:
@@ -419,8 +429,12 @@ class _Units:
 
 
 def _scan_unit(unit: dict[str, Any], scan: _Scan, *, object_store: Any, scan_archives: bool,
-               seeds: set[str]) -> str:
-    """``scanned``, ``offloaded_pointer`` or ``offloaded_archive``; raises when it cannot judge the run."""
+               seeds: set[str], cache: Any = None) -> str:
+    """``scanned``, ``offloaded_pointer`` or ``offloaded_archive``; raises when it cannot judge the run.
+
+    With ``cache`` (``website_withdrawal_run_scan_cache.RunScanCache``) a run directory's records are
+    read only when they changed since a plan last read them; the answer is the same.
+    """
 
     directory = unit["directory"]
     pointers = [_sealed_pointer(path, unit["name"]) for path in unit["pointers"]]
@@ -432,7 +446,11 @@ def _scan_unit(unit: dict[str, Any], scan: _Scan, *, object_store: Any, scan_arc
         _require(not path.is_symlink() or path.name in _restore_leftover_names(unit["name"]), "unsafe_entry")
     if directory is not None:
         unit["inventory"] = _inventory(directory)
-        _scan_files((directory / row[0] for row in unit["inventory"] if row[0].endswith(_SCANNED_SUFFIXES)), scan)
+        records = [row[0] for row in unit["inventory"] if row[0].endswith(_SCANNED_SUFFIXES)]
+        if cache is None:
+            _scan_files((directory / record for record in records), scan)
+        else:
+            scan.absorb(cache.facts(unit["root"], unit["name"], directory, records))
         unit["remote_uris"] = _remote_artifact_uris(directory)
         return "scanned"
     if not pointers:
@@ -589,23 +607,42 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              rigid_probe_work_root: Path | None = team_scene.DEFAULT_PROBE_WORK_ROOT,
                              unclaimed_handoff_root: Path | None = None,
                              site_index_root: Path | None = None, provider_copies: bool = False,
-                             provider_deleters: Mapping[str, Any] | None = None
+                             provider_deleters: Mapping[str, Any] | None = None,
+                             run_scan_cache: Path | None = None, scan_deadline: float | None = None
                              ) -> dict[str, Any]:
-    """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one)."""
+    """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one).
+
+    ``run_scan_cache`` keeps what each run's records name between plans
+    (``website_withdrawal_run_scan_cache``), so a plan reads only the runs that changed; the plan
+    is the same either way. ``scan_deadline`` (a ``time.monotonic`` value, with the cache only)
+    ends the plan with ``ScanBudgetSpent`` before reading a run past it; what was read is kept.
+    """
 
     site, identity = _site_identity(Path(capture_root))
     unresolved: list[dict[str, Any]] = []
     lineage = _lineage_intents(identity, site, intent_root, binding_root, unresolved)
+    listed = len(unresolved)
     units = _Units([Path(root) for root in run_roots], unresolved).units
+    roots_unlisted = {row["path"] for row in unresolved[listed:]}
     seeds = {identity["scene_id"], identity["capture_id"], *lineage["intents"]}
     vocabulary = {token.encode() for token in seeds} | {
         name.encode() for _, name in units if len(name) >= _MIN_CLOSURE_NAME}
+    cache = None
+    if run_scan_cache is not None:
+        from . import website_withdrawal_run_scan_cache as run_scan
+
+        # A word the kept facts cannot answer for: read every run, as without a cache.
+        if all(run_scan.cacheable(word) for word in vocabulary):
+            cache = run_scan.RunScanCache(Path(run_scan_cache), deadline=scan_deadline)
+            for root in (str(Path(run_root)) for run_root in run_roots):
+                if root not in roots_unlisted:
+                    cache.prune(root, [name for unit_root, name in units if unit_root == root])
     facts: dict[tuple[str, str], _Scan] = {}
     for key, unit in units.items():
         scan = _Scan(vocabulary - {unit["name"].encode()}, identity["request_id"])
         try:
             unit["judged_by"] = _scan_unit(unit, scan, object_store=object_store,
-                                           scan_archives=scan_offloaded_archives, seeds=seeds)
+                                           scan_archives=scan_offloaded_archives, seeds=seeds, cache=cache)
         except (WithdrawalDeletionError, OSError, tarfile.TarError) as error:
             reason = str(error) if isinstance(error, WithdrawalDeletionError) else "website_withdrawal_deletion_" \
                 "record_unreadable"
@@ -911,6 +948,11 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
             _require(canonical_digest({"rows": _inventory(directory)}) == run["inventory_digest"], "run_changed")
             shutil.rmtree(directory)
             deleted["runs"].append(run["directory"])
+            if resolution.get("run_scan_cache") is not None:
+                # What the plans kept of the run's records goes with it.
+                from .website_withdrawal_run_scan_cache import RunScanCache
+
+                RunScanCache(Path(resolution["run_scan_cache"])).forget(run["root"], run["name"])
         for path in (*run["leftovers"], *run["pointers"]):
             target = Path(path)
             if stat.S_ISLNK(os.lstat(target).st_mode) if os.path.lexists(target) else False:
