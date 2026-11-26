@@ -284,6 +284,18 @@ Intended design: every upload is written to one record before it is sent, and st
 - **The withdrawal (`site-capture-ceba4511…`):** acknowledged 2026-11-25 02:25Z, so its cool-off ends 2026-11-28 02:25Z. Its next plan is 2026-11-27 16:21Z (the 24-hour backoff from the old release). The first pass after both applies it. Not yet proven: no apply has run on the host.
 - **Still open for a complete deletion:** `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` is not known to be set on the host. Without it the source bucket prefix stays and the receipt names it under `remaining`. Read the first receipt before changing that.
 
+## The host's state backup needs no hand-installed secret (2026-11-26)
+
+- **Owner decision, 2026-11-26:** on the readiness check's finding that the control plane's state had no backup, "i approve - lets fix this for now and future". Asked how, the owner chose a key pair made in that session and the B2 bucket the host already uses.
+- **Before:** the backup existed in code since 11-11 and never ran. It waited on six files the owner had to install as root under `/etc/blueprint/control-plane-backup/` (a dedicated bucket, its key and an encryption key). None was installed; `door status` showed `control_plane_backup_not_configured` on every tick.
+- **What changed:**
+  - each generation is sealed with its own key, and that key is sealed to the owner's public key, `config/control_plane_state_backup_recipient.v1.json` (RSA-4096, OAEP-SHA256; fingerprint `sha256:0cc6f1c5…e956b8`). The host holds no backup secret and cannot read a backup;
+  - the bytes go under `control-plane-state/generations/` in the artifact store's bucket, through the files already in `/etc/blueprint/provider-secrets/`;
+  - a restore needs the owner's private key (`BLUEPRINT_CONTROL_PLANE_BACKUP_PRIVATE_KEY_FILE`). The rebuild script reads it from `--secrets-from` and never installs it; it cannot be waived.
+- **The private key:** handed to the owner as a file on 2026-11-26. It is in no repository and on no host.
+- **Not proven:** no backup has run on the host yet, so it is not known that the artifact store's key may list and delete object versions under the new prefix, or what lifecycle rules the bucket has. No restore, drill or rebuild has run. Runbook: the last section of `docs/runbooks/beta-operations.md`.
+- **Deploys on 2026-11-26 outside the D-08 window, for privacy:** `adcf33b` ([#3762](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3762), the standing approval for withdrawal deletion ships with the release). It also carries `7214711` (#3760).
+
 ## Metering and retry rollout on 2026-11-20
 
 - **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.

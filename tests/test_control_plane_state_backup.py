@@ -201,17 +201,140 @@ def test_seven_days_are_kept_and_the_newest_generation_always(host, tmp_path):
     assert store.generations() == {recent["generation"], newest["generation"]}
 
 
-def test_the_key_file_must_be_private_and_well_formed(tmp_path):
-    path = tmp_path / "key"
-    path.write_text(KEY.hex())
-    path.chmod(0o604)
-    with pytest.raises(backup.StateBackupError, match="unsafe"):
-        backup.load_key(path)
-    path.chmod(0o600)
-    assert backup.load_key(path) == KEY
-    path.write_text("not-a-key")
-    with pytest.raises(backup.StateBackupError, match="invalid"):
-        backup.load_key(path)
+def _owner_key(tmp_path: Path, name: str = "owner", *, bits: int = 3072) -> tuple[Path, Path]:
+    """A test key pair: the private PEM (0600) and the recipient file a release would carry."""
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    private_path = tmp_path / f"{name}-private.pem"
+    private_path.write_bytes(private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                   serialization.NoEncryption()))
+    private_path.chmod(0o600)
+    public = private.public_key()
+    recipient_path = tmp_path / f"{name}-recipient.json"
+    recipient_path.write_text(json.dumps({
+        "schema_version": backup.RECIPIENT_SCHEMA,
+        "public_key_pem": public.public_bytes(serialization.Encoding.PEM,
+                                              serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii"),
+        "fingerprint": backup._public_fingerprint(public)}))
+    return private_path, recipient_path
+
+
+def test_a_backup_sealed_to_the_owners_public_key_restores_with_the_private_key_alone(host, tmp_path):
+    private_path, recipient_path = _owner_key(tmp_path)
+    recipient = backup.load_recipient(recipient_path)
+    key, envelope = backup.new_generation_key(recipient)
+    store = FakeStore()
+    report = backup.run_backup(fs_root=host, store=store, key=key, key_envelope=envelope,
+                               report_root=tmp_path / "report",
+                               site_roots=[host / "var/lib/blueprint/pubsub-handoffs"], part_bytes=4096)
+    assert report["status"] == "complete" and report["recipient_fingerprint"] == recipient["fingerprint"]
+    seal = json.loads(store.get(f"{backup.KEY_PREFIX}{report['generation']}/seal.json"))
+    assert seal["key_envelope"] == envelope and seal["digest"] == canonical_digest(seal, digest_field="digest")
+    # Nothing in the bucket holds the generation's key in the clear, and the host kept none.
+    assert all(key not in data for rows in store.objects.values() for _, data in rows)
+    assert not list((tmp_path / "report").rglob("*key*"))
+    drill = tmp_path / "drill"
+    receipt = backup.restore(store=store, private_key_path=private_path, fs_root=drill)
+    assert receipt["generation"] == report["generation"]
+    for relative, data in STATE.items():
+        assert (drill / relative).read_bytes() == data, relative
+    # Each generation gets its own key.
+    assert backup.new_generation_key(recipient)[0] != key
+
+
+def test_only_the_private_key_the_generation_was_sealed_to_can_open_it(host, tmp_path):
+    private_path, recipient_path = _owner_key(tmp_path)
+    other_private, _ = _owner_key(tmp_path, "other")
+    key, envelope = backup.new_generation_key(backup.load_recipient(recipient_path))
+    store = FakeStore()
+    backup.run_backup(fs_root=host, store=store, key=key, key_envelope=envelope, report_root=tmp_path / "report",
+                      site_roots=[host / "var/lib/blueprint/pubsub-handoffs"], part_bytes=4096)
+    with pytest.raises(backup.StateBackupError, match="private_key_does_not_match_generation"):
+        backup.restore(store=store, private_key_path=other_private, fs_root=tmp_path / "drill")
+    with pytest.raises(backup.StateBackupError, match="private_key_required"):
+        backup.restore(store=store, fs_root=tmp_path / "drill")
+    # The private key file must be the owner's alone, a regular file, and a key.
+    private_path.chmod(0o640)
+    with pytest.raises(backup.StateBackupError, match="private_key_file_unsafe"):
+        backup.open_generation_key(envelope, private_path)
+    private_path.chmod(0o600)
+    assert backup.open_generation_key(envelope, private_path) == key
+    link = tmp_path / "link.pem"
+    link.symlink_to(private_path)
+    with pytest.raises(backup.StateBackupError, match="private_key_file_unsafe"):
+        backup.open_generation_key(envelope, link)
+    with pytest.raises(backup.StateBackupError, match="private_key_unreadable"):
+        backup.open_generation_key(envelope, tmp_path / "absent.pem")
+    for broken in ({**envelope, "scheme": "none"}, {**envelope, "wrapped_key": "not base64!"},
+                   {**envelope, "wrapped_key": envelope["wrapped_key"][:-8] + "AAAAAAA="}, None):
+        with pytest.raises(backup.StateBackupError, match="key_envelope_invalid"):
+            backup.open_generation_key(broken, private_path)
+    assert not (tmp_path / "drill").exists()
+
+
+def test_the_recipient_file_is_refused_unless_it_is_one_strong_key_with_its_own_fingerprint(tmp_path):
+    _, recipient_path = _owner_key(tmp_path)
+    good = json.loads(recipient_path.read_text())
+    assert backup.load_recipient(recipient_path)["fingerprint"] == good["fingerprint"]
+    _, other = _owner_key(tmp_path, "other")
+    _, weak = _owner_key(tmp_path, "weak", bits=2048)
+    cases = (({**good, "fingerprint": json.loads(other.read_text())["fingerprint"]}, "fingerprint_mismatch"),
+             ({**good, "public_key_pem": json.loads(other.read_text())["public_key_pem"]}, "fingerprint_mismatch"),
+             (json.loads(weak.read_text()), "key_unsupported"),
+             ({**good, "schema_version": "v0"}, "recipient_invalid"),
+             ({**good, "public_key_pem": "-----BEGIN PUBLIC KEY-----\nnot a key\n-----END PUBLIC KEY-----\n"},
+              "recipient_invalid"))
+    for value, reason in cases:
+        recipient_path.write_text(json.dumps(value))
+        with pytest.raises(backup.StateBackupError, match=reason):
+            backup.load_recipient(recipient_path)
+    recipient_path.write_text("{")
+    with pytest.raises(backup.StateBackupError, match="recipient_unreadable"):
+        backup.load_recipient(recipient_path)
+    with pytest.raises(backup.StateBackupError, match="recipient_unreadable"):
+        backup.load_recipient(tmp_path / "absent.json")
+    link = tmp_path / "link.json"
+    link.symlink_to(other)
+    with pytest.raises(backup.StateBackupError, match="recipient_file_unsafe"):
+        backup.load_recipient(link)
+
+
+def test_the_release_carries_the_owners_public_key_and_no_private_one():
+    path = backup.RELEASE_RECIPIENT_PATH
+    assert path == Path(__file__).resolve().parents[1] / "config" / backup.RECIPIENT_FILENAME
+    recorded = json.loads(path.read_text())
+    recipient = backup.load_recipient(path)
+    assert recipient["fingerprint"] == recorded["fingerprint"] and recipient["public_key"].key_size >= 3072
+    assert recorded["decision"]["by"] == "owner"
+    text = path.read_text()
+    assert "PRIVATE KEY" not in text and "@" not in text
+    # A generation sealed to it carries the envelope a restore opens.
+    _, envelope = backup.new_generation_key(recipient)
+    assert envelope["scheme"] == backup.ENVELOPE_SCHEME and envelope["recipient_fingerprint"] == recorded["fingerprint"]
+
+
+def test_the_timers_run_seals_to_the_release_key_and_reads_no_key_file(host, tmp_path, monkeypatch):
+    private_path, recipient_path = _owner_key(tmp_path)
+    store = FakeStore()
+    seen: dict = {}
+
+    def fake_run(**kwargs):
+        seen.update(kwargs)
+        return {"status": "complete", "withdrawal_purge": {"outcome": None}}
+
+    monkeypatch.setattr(backup.S3BackupStore, "configured", classmethod(lambda cls: store))
+    monkeypatch.setattr(backup, "run_backup", fake_run)
+    monkeypatch.setenv(backup.RECIPIENT_FILE_ENV, str(recipient_path))
+    monkeypatch.setenv(backup.REPORT_ROOT_ENV, str(tmp_path / "report"))
+    monkeypatch.delenv(backup.PRIVATE_KEY_FILE_ENV, raising=False)
+    assert backup.main(["run"]) == 0
+    assert backup.open_generation_key(seen["key_envelope"], private_path) == seen["key"]
+    # A restore names the owner's private key or refuses; it never guesses one.
+    with pytest.raises(SystemExit, match=backup.PRIVATE_KEY_FILE_ENV):
+        backup.main(["restore", "--fs-root", str(tmp_path / "drill")])
 
 
 # --------------------------------------------------------------------------- withdrawal purge

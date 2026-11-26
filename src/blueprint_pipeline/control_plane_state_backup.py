@@ -2,7 +2,8 @@
 
 The whole control plane runs on one host. Its job ledgers, queues, receipts, money records, consent and
 withdrawal records and the owner's standing approvals existed as one copy on one disk. This module keeps
-an encrypted copy of exactly that state (class (a)) in a dedicated B2 bucket, and nothing else:
+an encrypted copy of exactly that state (class (a)) in B2, under its own prefix (``KEY_PREFIX``) of the
+bucket the host already writes job artifacts to, and nothing else:
 
 - **What.** ``ALLOWLIST`` names every backed-up root explicitly. A root not on it is not backed up, and
   each run reports the production roots it skipped and why (``skipped_roots``). Site data (class (c):
@@ -13,9 +14,13 @@ an encrypted copy of exactly that state (class (a)) in a dedicated B2 bucket, an
   ``.json``/``.jsonl`` records up to ``RECORD_MAX_FILE_BYTES``; every other root keeps regular files up to
   ``MAX_FILE_BYTES``. What a bound excluded is counted per root in the report.
 - **How.** One run every 15 minutes (``blueprint-control-plane-state-backup.timer``) packs the files into
-  one gzip tar stream, cut into parts of ``PART_BYTES``, each sealed with AES-GCM under the owner's key
-  (``ENCRYPTION_KEY_FILE_ENV``). The file index is encrypted too: it names paths, and paths name sites.
-  Only the seal is plain: generation id, times, part digests and the key's fingerprint. A run is bounded
+  one gzip tar stream, cut into parts of ``PART_BYTES``, each sealed with AES-GCM under a key made for
+  that generation alone. That key is itself sealed to the owner's public key (``RELEASE_RECIPIENT_PATH``,
+  a committed file every release carries; owner decision 2026-11-26) and travels in the seal as its
+  ``key_envelope``. So the host holds no secret for a backup and nobody installs one: it can write a
+  backup and cannot read one back. Only the holder of the private key can, at a restore
+  (``PRIVATE_KEY_FILE_ENV``). The file index is encrypted too: it names paths, and paths name sites.
+  Only the seal is plain: generation id, times, part digests, the envelope and the key's fingerprint. A run is bounded
   in bytes and time; a run that cannot finish is ``incomplete``, uploads no seal, and is never reported as
   backed up. Seven days of generations are kept (the newest sealed one always).
 - **Privacy.** After a site's deletion receipt is sealed, the next run takes a fresh complete generation,
@@ -34,6 +39,8 @@ an encrypted copy of exactly that state (class (a)) in a dedicated B2 bucket, an
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import fnmatch
 import grp
 import hashlib
@@ -83,8 +90,17 @@ DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/control-pl
 REPORT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_BACKUP_REPORT_ROOT"
 SITE_ROOTS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS"
 DEFAULT_SITE_ROOTS = ("/var/lib/blueprint/pubsub-handoffs",)
-ENCRYPTION_KEY_FILE_ENV = "BLUEPRINT_CONTROL_PLANE_BACKUP_ENCRYPTION_KEY_FILE"
-#: The dedicated bucket, through the same file-pair mechanism as the artifact store.
+RECIPIENT_SCHEMA = "control_plane_state_backup_recipient.v1"
+RECIPIENT_FILENAME = "control_plane_state_backup_recipient.v1.json"
+#: The owner's public key, committed with the release. Each generation's key is sealed to it.
+RELEASE_RECIPIENT_PATH = Path(__file__).resolve().parents[2] / "config" / RECIPIENT_FILENAME
+RECIPIENT_FILE_ENV = "BLUEPRINT_CONTROL_PLANE_BACKUP_RECIPIENT_FILE"
+#: The owner's private key, named only for a restore; it is never installed on the host.
+PRIVATE_KEY_FILE_ENV = "BLUEPRINT_CONTROL_PLANE_BACKUP_PRIVATE_KEY_FILE"
+ENVELOPE_SCHEME = "rsa-oaep-sha256.v1"
+MIN_RECIPIENT_KEY_BITS = 3072
+MAX_KEY_FILE_BYTES = 16 * 1024
+#: The bucket, through the same file-pair mechanism as the artifact store (the unit names that store's files).
 STORE_FILE_ENV = {
     "access_key": "BLUEPRINT_CONTROL_PLANE_BACKUP_ACCESS_KEY_ID_FILE",
     "secret_key": "BLUEPRINT_CONTROL_PLANE_BACKUP_SECRET_ACCESS_KEY_FILE",
@@ -380,19 +396,88 @@ def _walk(root: BackupRoot, fs_root: Path, stats: dict[str, Any]) -> Iterator[_E
 # --------------------------------------------------------------------------- encryption
 
 
-def load_key(path: Path) -> bytes:
-    """The owner's 32-byte key: 64 hex characters in a regular file no other user can read."""
+def _oaep() -> Any:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    return padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+
+
+def _public_fingerprint(public_key: Any) -> str:
+    from cryptography.hazmat.primitives import serialization
+
+    return "sha256:" + hashlib.sha256(public_key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
+
+
+def load_recipient(path: Path = RELEASE_RECIPIENT_PATH) -> dict[str, Any]:
+    """The owner's public key (``public_key``) and its ``fingerprint``, from the release's committed file.
+
+    A regular file, never a link: one small JSON object of the current schema whose ``public_key_pem`` is an
+    RSA key of at least ``MIN_RECIPIENT_KEY_BITS`` and whose ``fingerprint`` is that key's (sha256 of its
+    DER SubjectPublicKeyInfo), so an edit to one without the other is refused."""
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     try:
         info = os.lstat(path)
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o007:
-            raise StateBackupError("control_plane_backup_key_file_unsafe")
-        text = Path(path).read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError) as error:
-        raise StateBackupError("control_plane_backup_key_unreadable") from error
-    if re.fullmatch(r"[0-9a-fA-F]{64}", text) is None:
-        raise StateBackupError("control_plane_backup_key_invalid")
-    return bytes.fromhex(text)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_KEY_FILE_BYTES:
+            raise StateBackupError("control_plane_backup_recipient_file_unsafe")
+        value = json.loads(Path(path).read_bytes())
+    except (OSError, ValueError) as error:
+        raise StateBackupError("control_plane_backup_recipient_unreadable") from error
+    if not isinstance(value, dict) or value.get("schema_version") != RECIPIENT_SCHEMA \
+            or not isinstance(value.get("public_key_pem"), str):
+        raise StateBackupError("control_plane_backup_recipient_invalid")
+    try:
+        public_key = serialization.load_pem_public_key(value["public_key_pem"].encode("ascii"))
+    except (ValueError, TypeError, UnicodeError) as error:
+        raise StateBackupError("control_plane_backup_recipient_invalid") from error
+    if not isinstance(public_key, rsa.RSAPublicKey) or public_key.key_size < MIN_RECIPIENT_KEY_BITS:
+        raise StateBackupError("control_plane_backup_recipient_key_unsupported")
+    fingerprint = _public_fingerprint(public_key)
+    if value.get("fingerprint") != fingerprint:
+        raise StateBackupError("control_plane_backup_recipient_fingerprint_mismatch")
+    return {"public_key": public_key, "fingerprint": fingerprint}
+
+
+def new_generation_key(recipient: Mapping[str, Any]) -> tuple[bytes, dict[str, str]]:
+    """A fresh 32-byte key for one generation, and its envelope: that key sealed to the owner's public key."""
+
+    key = secrets.token_bytes(32)
+    wrapped = recipient["public_key"].encrypt(key, _oaep())
+    return key, {"scheme": ENVELOPE_SCHEME, "recipient_fingerprint": str(recipient["fingerprint"]),
+                 "wrapped_key": base64.b64encode(wrapped).decode("ascii")}
+
+
+def open_generation_key(envelope: Any, private_key_path: Path) -> bytes:
+    """A generation's key, opened from its envelope with the owner's private key (a PEM file no other user
+    can read). Refuses a key that is not the one the generation was sealed to, by name."""
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    if not isinstance(envelope, Mapping) or envelope.get("scheme") != ENVELOPE_SCHEME:
+        raise StateBackupError("control_plane_backup_key_envelope_invalid")
+    try:
+        info = os.lstat(private_key_path)
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > MAX_KEY_FILE_BYTES:
+            raise StateBackupError("control_plane_backup_private_key_file_unsafe")
+        private_key = serialization.load_pem_private_key(Path(private_key_path).read_bytes(), password=None)
+    except (OSError, ValueError, TypeError) as error:
+        raise StateBackupError("control_plane_backup_private_key_unreadable") from error
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise StateBackupError("control_plane_backup_private_key_unreadable")
+    if _public_fingerprint(private_key.public_key()) != envelope.get("recipient_fingerprint"):
+        raise StateBackupError("control_plane_backup_private_key_does_not_match_generation")
+    try:
+        key = private_key.decrypt(base64.b64decode(str(envelope.get("wrapped_key")), validate=True), _oaep())
+    except (ValueError, binascii.Error) as error:
+        raise StateBackupError("control_plane_backup_key_envelope_invalid") from error
+    if len(key) != 32:
+        raise StateBackupError("control_plane_backup_key_envelope_invalid")
+    return key
 
 
 def key_fingerprint(key: bytes) -> str:
@@ -422,7 +507,8 @@ def _open(key: bytes, blob: bytes, aad: str) -> bytes:
 
 
 class S3BackupStore:
-    """The dedicated backup bucket through the S3 API (B2), configured by the file pair in ``STORE_FILE_ENV``."""
+    """The backup's bucket through the S3 API (B2), configured by the file pair in ``STORE_FILE_ENV``. Every
+    key this module writes, lists or deletes is under ``KEY_PREFIX``."""
 
     def __init__(self, client: Any, bucket: str):
         self.client, self.bucket = client, bucket
@@ -800,8 +886,12 @@ def _enabled_units(fs_root: Path) -> list[str]:
 def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site_roots: Sequence[Path] | None = None,
                now: float | None = None, max_bytes: int = DEFAULT_MAX_BYTES, max_seconds: float = DEFAULT_MAX_SECONDS,
                part_bytes: int = PART_BYTES, clock: Callable[[], float] = time.monotonic,
-               allowlist: Sequence[BackupRoot] = ALLOWLIST) -> dict[str, Any]:
-    """One bounded run: a fresh generation, then retention and any withdrawal purge. Writes ``latest.json``."""
+               allowlist: Sequence[BackupRoot] = ALLOWLIST,
+               key_envelope: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """One bounded run: a fresh generation, then retention and any withdrawal purge. Writes ``latest.json``.
+
+    ``key`` seals this generation. ``key_envelope`` (``new_generation_key``) is that key sealed to the owner's
+    public key; it goes into the seal, so a restore needs only the owner's private key."""
 
     started = _now(now)
     report_root = Path(report_root)
@@ -850,6 +940,8 @@ def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site
                 "finished_at_iso": _iso(started if now is not None else time.time()), "key_fingerprint": key_fingerprint(key),
                 "parts": writer.parts, "index_key": index_key, "files": len(files),
                 "plain_bytes": sum(item["bytes"] for item in files)}
+        if key_envelope is not None:
+            seal["key_envelope"] = dict(key_envelope)
         seal["digest"] = canonical_digest(seal, digest_field="digest")
         store.put(f"{KEY_PREFIX}{gen}/seal.json", json.dumps(seal, sort_keys=True).encode("utf-8"))
     except StateBackupError as error:
@@ -884,6 +976,8 @@ def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site
         "started_at_iso": _iso(started), "files": len(files), "plain_bytes": sum(item["bytes"] for item in files),
         "parts": len(writer.parts), "roots": stats, "skipped_roots": skipped_roots(), "retention": retention,
         "withdrawal_purge": purge,
+        # Whose key can read this generation: the fingerprint of the owner's public key it was sealed to.
+        "recipient_fingerprint": (key_envelope or {}).get("recipient_fingerprint"),
         "bounds": {"max_bytes": max_bytes, "max_seconds": max_seconds, "max_file_bytes": MAX_FILE_BYTES,
                    "record_max_file_bytes": RECORD_MAX_FILE_BYTES},
     }
@@ -939,9 +1033,13 @@ def _write_bytes(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-def restore(*, store: Any, key: bytes, fs_root: Path, generation: str = "latest", report_root: Path | None = None,
-            hold_marker: Path | None = None, now: float | None = None) -> dict[str, Any]:
+def restore(*, store: Any, key: bytes | None = None, fs_root: Path, generation: str = "latest",
+            report_root: Path | None = None, hold_marker: Path | None = None, now: float | None = None,
+            private_key_path: Path | None = None) -> dict[str, Any]:
     """Write one sealed generation back under ``fs_root``, verify every file, and record a receipt.
+
+    The generation's key is opened from its seal with the owner's private key (``private_key_path``), unless
+    a caller that holds the key passes it (``key``).
 
     Idempotent: a generation already restored under this root is reported, not restored again. With
     ``hold_marker`` it also writes the money hold that keeps paid admission closed until the spend guard's reap
@@ -963,6 +1061,10 @@ def restore(*, store: Any, key: bytes, fs_root: Path, generation: str = "latest"
     if seal.get("schema_version") != SEAL_SCHEMA or seal.get("generation") != gen \
             or seal.get("digest") != canonical_digest(seal, digest_field="digest"):
         raise StateBackupError("control_plane_backup_seal_invalid")
+    if key is None:
+        if private_key_path is None:
+            raise StateBackupError("control_plane_backup_private_key_required")
+        key = open_generation_key(seal.get("key_envelope"), Path(private_key_path))
     if seal.get("key_fingerprint") != key_fingerprint(key):
         raise StateBackupError("control_plane_backup_key_does_not_match_generation")
     index = json.loads(_open(key, store.get(seal["index_key"]), f"{gen}:index"))
@@ -1041,21 +1143,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "list":
         print(json.dumps({"sealed": _sealed_generations(store)}, sort_keys=True))
         return 0
-    key_path = os.getenv(ENCRYPTION_KEY_FILE_ENV)
-    if not key_path:
-        raise SystemExit(f"{ENCRYPTION_KEY_FILE_ENV} is not set")
-    key = load_key(Path(key_path))
     if command == "restore":
+        private_key_path = os.getenv(PRIVATE_KEY_FILE_ENV)
+        if not private_key_path:
+            raise SystemExit(f"{PRIVATE_KEY_FILE_ENV} is not set: a restore needs the owner's private key")
         production = Path(args.fs_root).resolve() == Path("/")
         if production and args.ack != RESTORE_ACK:
             raise SystemExit(f"refusing: restoring onto / needs --ack {RESTORE_ACK}")
         from .control_plane_restore_money_hold import DEFAULT_MARKER
 
-        receipt = restore(store=store, key=key, fs_root=args.fs_root, generation=args.generation,
+        receipt = restore(store=store, private_key_path=Path(private_key_path), fs_root=args.fs_root,
+                          generation=args.generation,
                           hold_marker=_host(args.fs_root, str(DEFAULT_MARKER)) if production else None)
         print(json.dumps(receipt, sort_keys=True))
         return 0
-    report = run_backup(fs_root=Path("/"), store=store, key=key, report_root=report_root,
+    # No secret on the host: a key made for this generation, sealed to the owner's committed public key.
+    key, envelope = new_generation_key(load_recipient(Path(os.getenv(RECIPIENT_FILE_ENV) or RELEASE_RECIPIENT_PATH)))
+    report = run_backup(fs_root=Path("/"), store=store, key=key, key_envelope=envelope, report_root=report_root,
                         max_bytes=args.max_bytes, max_seconds=args.max_seconds)
     print(json.dumps({item: report.get(item) for item in ("status", "reason", "generation", "files", "plain_bytes",
                                                           "retention", "withdrawal_purge")}, sort_keys=True))
@@ -1066,9 +1170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "ALLOWLIST", "BACKUP_CLEARED_STATUSES", "BackupRoot", "ListingIncomplete", "S3BackupStore", "SITE_DATA_ROOTS",
-    "StateBackupError", "backup_copies_status", "delete_generations", "key_fingerprint", "ledger_path", "load_key",
-    "main", "purge_withdrawn", "read_ledger", "read_purge_receipt", "report_root_from_env", "restore", "run_backup",
-    "skipped_roots",
+    "StateBackupError", "backup_copies_status", "delete_generations", "key_fingerprint", "ledger_path",
+    "load_recipient", "main", "new_generation_key", "open_generation_key", "purge_withdrawn", "read_ledger",
+    "read_purge_receipt", "report_root_from_env", "restore", "run_backup", "skipped_roots",
 ]
 
 

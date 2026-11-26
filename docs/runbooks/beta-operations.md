@@ -54,7 +54,7 @@ at once. A stall that continues posts again each hour.
 | `rigid_probe_stalled` | A rigid robot-free probe entry stayed in `pending/` and its latest attempt recorded nothing new, or a retired staging refusal's timed retry is overdue (`status: retry_overdue`). | 8 h | Read the latest `rigid-robot-free-probes/jobs/<key>-*/attempts/<NN>/rigid_robot_free_probe_ingest.json` (`status` in the page is its `state`) and the runner's journal. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
 | `control_plane_backup_stale` | No complete control-plane state backup for too long (`status: never_completed`, or the last one's age). | 2 h since the newest complete backup | `door status` for a hold on `blueprint-control-plane-state-backup.timer` (`door release-hold` it if forgotten), `door journal blueprint-control-plane-state-backup.service -n 200` for the failure, then `door unit start blueprint-control-plane-state-backup.timer`. Backup and rebuild: the last section of this file. |
-| `control_plane_backup_not_configured` (warn, not a page) | No state backup has ever run on this host: its ledger does not exist. | Every capacity tick until one runs | The backup unit is skipped until its bucket file is installed (`door journal blueprint-control-plane-state-backup.service` says `unmet condition check`). Owner step: install `/etc/blueprint/control-plane-backup/b2_bucket` and its key. |
+| `control_plane_backup_not_configured` (warn, not a page) | No state backup has ever run on this host: its ledger does not exist. | Every capacity tick until one runs | The backup unit is skipped on a release without the owner's public key (`config/control_plane_state_backup_recipient.v1.json`) or a host without the artifact store's bucket file (`door journal blueprint-control-plane-state-backup.service` says `unmet condition check`). Deploy `main`; nothing is installed by hand. |
 | `website_preparation_blueprint_fault` (pages once) | A website preparation stopped on a fault in Blueprint's own code, not the site's input (`preparation_fault_alert.py`). | once per fault | Fix the cause in a release. The retry lane runs the job once more in its window's last two hours ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §8), so the fix must be live before then. |
 | `website_atlas_look_draft_final` (pages once) | A job's refined splat kept failing until its window ended, so its look is the draft for good (`preparation_fault_alert.py`). | once per job | Nothing more can be bought for that job ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §9). Read why the refined splat failed (the job's `last_error` and its splat attempts under `pipeline/atlas/`) and fix that cause for later jobs. |
 
@@ -1240,13 +1240,25 @@ reconstructions, run evidence and the site-derived stores. Caches, scratch and
 releases are skipped too. Each run's report (`control-plane-backup/latest.json`)
 names every skipped root and why, and counts what a size bound left out.
 
-- Encryption: AES-GCM under the owner's key. Only the host and the holder of the key
-  can read a backup. The bucket sees only part digests and times.
+- Encryption: AES-GCM under a key made for that generation alone. That key is
+  sealed to the owner's public key and travels in the generation's seal. The
+  public key is a committed file every release carries,
+  `config/control_plane_state_backup_recipient.v1.json` (owner decision
+  2026-11-26). The host holds no backup secret: it can write a backup and cannot
+  read one. Only the holder of the private key can read a backup. The bucket
+  sees only part digests, times and the sealed key.
+- Where: the B2 bucket the host already writes job artifacts to, under the
+  backup's own prefix, `control-plane-state/generations/`. The unit reads that
+  store's files under `/etc/blueprint/provider-secrets/`. Nothing is installed
+  by hand for a backup.
 - Kept: seven days. The newest complete generation is always kept.
-- Until the owner installs the key and bucket files (owner steps below), the unit is
-  skipped and nothing is backed up. Once a backup has completed, the stall alarm pages
-  `control_plane_backup_stale` when none completes for two hours, even if the unit
-  never runs (a forgotten door hold, a dead timer).
+- The unit is skipped only on a release without the public key or a host
+  without the bucket's files. Once a backup has completed, the stall alarm pages
+  `control_plane_backup_stale` when none completes for two hours, even if the
+  unit never runs (a forgotten door hold, a dead timer).
+- To change the key, replace `public_key_pem` and `fingerprint` together in a
+  reviewed commit and deploy. Later generations are sealed to the new key.
+  Earlier ones still need the old private key until they age out in seven days.
 - A run is bounded in bytes and time. A run that cannot finish is `incomplete`,
   uploads no seal and fails the unit, so the failure notifier reports it.
 - Env files under `/etc/blueprint` are in the backup, encrypted. If one holds a
@@ -1295,18 +1307,39 @@ retires the hold. No operator step clears it.
   `mount_work_volume.sh` itself on a fresh, empty host. The volume step needs
   `rsync` on the host; without it, the step refuses.
 
-**Owner steps** (none done; the repository states no price for the bucket):
+**Owner steps:**
 
-1. Create a dedicated private B2 bucket, versioning on, with no object lock (the
-   withdrawal purge must be able to delete versions).
-2. Create an application key that can reach only that bucket.
-3. Put these files under `/etc/blueprint/control-plane-backup/` (0600 root):
-   - `b2_key_id`, `b2_application_key`, `b2_bucket`, `b2_s3_endpoint_url`, `b2_region`;
-   - `encryption_key`: 64 hex characters, for example from `openssl rand -hex 32`.
+1. Keep the private key. It was made on 2026-11-26 and handed to the owner as
+   `blueprint-control-plane-backup-private-key.pem`. Its public half's
+   fingerprint is in the committed file. It is in no repository and on no host.
+   Without it no backup can be read. If it is lost, make a new pair and replace
+   the committed public key; backups from before that cannot be read.
+2. Keep the secrets that `deploy/host/rebuild-owner-secrets.txt` lists, outside
+   the host. At a rebuild the private key goes beside them, as
+   `control-plane-backup/private_key.pem` (mode 0600) under `--secrets-from`.
+   The rebuild reads it there and never copies it onto the host.
+3. Run the first restore drill, into a temporary root. It needs the private
+   key, so only the owner can run it. On the host, as root, with the key copied
+   there for the drill and removed after:
 
-   Keep an offline copy of the key and the bucket credentials. Without them no
-   backup can be restored.
-4. Keep the secrets that `deploy/host/rebuild-owner-secrets.txt` lists, outside the host.
-5. Run the first restore drill on the real host, into a temporary root:
-   `python -m blueprint_pipeline.control_plane_state_backup restore --fs-root /tmp/drill`
-   with the unit's environment. Then compare files, and delete the temporary root.
+   ```bash
+   cd /opt/blueprint/task-evaluation-control-plane
+   env PYTHONPATH=src \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_PRIVATE_KEY_FILE=/root/private_key.pem \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url \
+     BLUEPRINT_CONTROL_PLANE_BACKUP_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region \
+     /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python \
+     -m blueprint_pipeline.control_plane_state_backup restore --fs-root /tmp/drill
+   ```
+
+   Then compare files, and delete the temporary root and `/root/private_key.pem`.
+
+Not proven until the first runs are read (`door cat` of
+`/var/lib/blueprint/pipeline-control-plane/control-plane-backup/latest.json`):
+that the artifact store's key may write, list and delete object versions under
+the backup's prefix. A run that cannot is `incomplete` and fails the unit, so
+the failure notifier reports it. The bucket's own lifecycle rules are not
+recorded in this repository.
