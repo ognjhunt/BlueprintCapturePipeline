@@ -901,11 +901,16 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            robot_access_scope: Mapping[str, Any] | None = None,
                            robot_access_offer: Mapping[str, Any] | None = None,
                            package_only: bool = False,
-                           rule_withheld: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                           rule_withheld: Mapping[str, Any] | None = None,
+                           further_objects: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
     ``rule_withheld`` (the website worker's, with ``package_only``; ``website_scene_handoff``): a one-object job no
     task profile models. Its rigid object is placed as compiled; no rule is assumed, sealed or put in the plan,
     and the record says so and why (``RULE_WITHHELD``), which the company package reads (``website_company_simulation``).
+    ``further_objects`` (``website_further_objects.for_revision``, read on the host): a rigid job's further objects,
+    each a ``job_object`` row after the task row at its filmed pose. A packet writer that refuses them has them dropped,
+    flagged ``further_objects_left_out`` (``website_further_objects.refused_rows_dropped``); the half never refuses
+    for them. Without any, the half and its record are as before.
 
     ``package_only`` is the website worker's (owner decision 2026-11-15): Blueprint builds the deployment
     companies' scene package and runs no test on it. A refusal whose every code means only that there is no place
@@ -1092,8 +1097,12 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     if not articulated:
         # The robots' cameras see the room pressed down out of the object and its mark (receipt in the variant).
         appearance = compiler.apply_task_volume_clearance(appearance, task_spec=task_spec, output_root=root)
+    from . import website_further_objects as further  # each further object of the job, after the task row
+    further_rows = [] if articulated or not further_objects else further.rows(
+        further_objects, root=root, evidence_asset_row=compiler.evidence_asset_row)
     rows = [compiler.evidence_asset_row(Path(appearance["path"]), root=root, semantic_role="scene_appearance"),
-            compiler.evidence_asset_row(physics_collision, root=root, semantic_role="scene_collision"), task_row]
+            compiler.evidence_asset_row(physics_collision, root=root, semantic_role="scene_collision"), task_row,
+            *further_rows]
     if destination_asset is not None:
         rows.append({**compiler.evidence_asset_row(destination_asset["path"], root=root, semantic_role="task_support"),
             "asset_id": destination_asset["asset_id"], "source_asset_id": destination_asset["source_asset_id"],
@@ -1101,7 +1110,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "reset_state": {"root_pose_world": destination_asset["pose_world"], "joint_positions": {}}})
 
     # Everything above is the scene's own. The arm's part below may be absent on a website compile, by name.
-    scene_rows, absent = list(rows), None
+    scene_rows, absent, further_left_out = list(rows), None, None
     try:
         if profile is None:
             raise profile_refusal or TeamScenePacketError("team_scene_droid_profile_invalid")
@@ -1196,8 +1205,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "appearance_variant": compiler.packet_appearance_variant(appearance), "request_digest": ""}
         request["request_digest"] = canonical_digest(request, digest_field="request_digest")
         packet = root / PACKET_DIRECTORY
-        materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
-                                             link_sources_within=root)
+        request, further_left_out = further.refused_rows_dropped(lambda value: materialize_native_task_arena_packet(
+            request=value, evidence_root=root, output_dir=packet, link_sources_within=root), request, output_dir=packet)
         exterior_right, placement = _exterior_right(packet, base=base, aim=start)
         camera_layout: dict[str, Any] = {"exterior_right": placement}
         if exterior_right is not None:
@@ -1206,8 +1215,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             request = {**request, "cameras": [*request["cameras"], exterior_right], "request_digest": ""}
             request["request_digest"] = canonical_digest(request, digest_field="request_digest")
             packet = root / THREE_VIEW_PACKET_DIRECTORY
-            materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
-                                                 link_sources_within=root)
+            request, dropped = further.refused_rows_dropped(lambda value: materialize_native_task_arena_packet(
+                request=value, evidence_root=root, output_dir=packet, link_sources_within=root), request,
+                output_dir=packet)
+            further_left_out = further_left_out or dropped
     except ValueError as exc:  # every typed refusal below is one; only the arm's own codes are let through
         if package_only and isinstance(exc.__cause__, OSError):
             # A full disk or a passing write failure is the host's, never a final half without the arm: it
@@ -1220,6 +1231,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         for partial in (root / PACKET_DIRECTORY, root / THREE_VIEW_PACKET_DIRECTORY):
             shutil.rmtree(partial, ignore_errors=True)
         station, station_search, camera_layout, stations, access = None, None, {}, {}, None
+        further_left_out = None  # the scene without the arm keeps every further object's row
         stage_5, stage_4 = robot_absent.stage_records(adapter)
         absent = {"reason": reason, "robot_included": False, "paid_step_started": False,
                   # The look file failed its quality gate: it ships as it is, and the package says so.
@@ -1297,6 +1309,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         **({robot_absent.FIELD: absent} if absent is not None else {}),
         **({robot_absent.PROBE_FIELD: robot_absent.PROBE_NOT_QUEUED}
            if package_only else {}),
+        **further.half_record(further_objects, [] if further_left_out else further_rows, further_left_out),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
@@ -1435,6 +1448,14 @@ def record_team_scene(compiled: Mapping[str, Any], *, run_root: str | Path, capt
     return {**compiled, "registry": written, "robot_free_probe": probe}
 
 
+def further_objects_for(capture_root: str | Path, revision: Mapping[str, Any]) -> dict[str, Any]:
+    """``{"further_objects": ...}`` for a website revision whose preparation composed further objects of the job, read
+    on the host (``website_further_objects.for_revision``); empty otherwise, so the compile is as before."""
+    from .website_further_objects import for_revision
+    found = for_revision(Path(capture_root), revision)
+    return {"further_objects": found} if found else {}
+
+
 def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
                        output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
                        **packet_inputs: Any) -> dict[str, Any]:
@@ -1449,7 +1470,8 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
     root = Path(output_root)
     revision, documents = fetch_team_scene_sources(run_root=run_root, output_root=root, fetcher=fetcher)
     compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / SCENE_DIRECTORY,
-                                      **with_movable_furniture(packet_inputs, revision=revision))
+                                      **with_movable_furniture(packet_inputs, revision=revision),
+                                      **further_objects_for(capture_root, revision))
     return record_team_scene(compiled, run_root=run_root, capture_root=capture_root, scenario_id=scenario_id,
                              scene_revision_digest=revision["revision_digest"])
 

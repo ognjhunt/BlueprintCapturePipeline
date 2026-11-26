@@ -136,6 +136,34 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
     return {"library_models": [row]}
 
 
+def further_credits(preparation: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """The credit of each library model a further object of the job was authored from (the preparation's
+    ``further_objects``, ``website_further_objects``), as ``credit`` reads one, each marked with its part
+    (``Object_02``...): ``{"library_models": rows}``, ``{"library_refusal": code}`` when one cannot be credited (its
+    geometry never ships without its credit), empty without any. Its model's own file is not shipped apart: its credit
+    names the shipped files that hold its geometry (``credited``)."""
+    record = preparation.get("further_objects") if isinstance(preparation, Mapping) else None
+    rows: list[dict[str, Any]] = []
+    for row in (record.get("objects") or []) if isinstance(record, Mapping) else []:
+        if not isinstance(row, Mapping) or row.get("source") != "library":
+            continue
+        found = credit({"library_design": row.get("library_design")}, capture_root)
+        if "library_refusal" in found:
+            return {"library_refusal": found["library_refusal"]}
+        part = str(row.get("prim_path") or "").removeprefix("/World/")
+        rows += [{**item, "file": None, "path": None, "sha256": None, "part": part} for item in found["library_models"]]
+    return {"library_models": rows} if rows else {}
+
+
+def merged(*credits: Mapping[str, Any]) -> dict[str, Any]:
+    """Several ``credit`` results as one: a refusal when any refuses, else every model in order; empty without any."""
+    refused = next((item["library_refusal"] for item in credits if item.get("library_refusal")), None)
+    if refused:
+        return {"library_refusal": refused}
+    rows = [row for item in credits for row in item.get("library_models") or []]
+    return {"library_models": rows} if rows else {}
+
+
 def refusal(source: Mapping[str, Any]) -> str | None:
     """Why the package may not leave with the job's object in it: the object was built from a library model whose
     credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``). A package
@@ -225,7 +253,7 @@ def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str
     part and the USD layers it uses, any other shipped USD file with a mesh of the model's topology (read from its
     own file, or as recorded when it was written), and the layer of its simulated variations (``VARIATIONS_FILE``).
     Empty without a model."""
-    rows = shipped(source)
+    rows = [row for row in shipped(source) if not row.get("part")]  # a further object's model: ``credited``
     if not rows:
         return []
     staging = Path(staging)
@@ -246,6 +274,33 @@ def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str
     return [*first, *sorted(names - set(first))]
 
 
+def _part_files(row: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -> list[str]:
+    """The shipped files that hold a further object's library model: its part and the USD layers it uses, any other
+    shipped USD file with a mesh of its model's topology, and the layer of its simulated variations."""
+    names = (_uses(staging, staging / placed[row["part"]]) if row.get("part") in placed else set()) | (
+        {VARIATIONS_FILE} if (staging / VARIATIONS_FILE).is_file() else set())
+    topology = {(int(row["topology"][0]), str(row["topology"][1]))} if row.get("topology") else set()
+    for path in sorted(item for item in staging.rglob("*") if item.is_file()) if topology else []:
+        relative = path.relative_to(staging).as_posix()
+        if relative not in names and path.suffix.lower() in USD_SUFFIXES and mesh_topologies(
+                path, {length for length, _ in topology}) & topology:
+            names.add(relative)
+    own = [placed[row["part"]]] if row.get("part") in placed else []
+    return [*own, *sorted(names - set(own))]
+
+
+def credited(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -> dict[str, Any]:
+    """What the README's credits name: ``library_files``, every file of the job's object's model
+    (``credited_files``), and, when a further object's model ships, each model's own files on its credit row
+    (``credited_files`` on ``library_models``); a further object's model whose part does not ship is not credited."""
+    found: dict[str, Any] = {"library_files": credited_files(source, staging, placed)}
+    rows = shipped(source)
+    if any(row.get("part") for row in rows):
+        found["library_models"] = [row if not row.get("part") else {**row, "credited_files": _part_files(
+            row, Path(staging), placed)} for row in rows if not row.get("part") or row["part"] in placed]
+    return found
+
+
 def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     """The README's "Library models" section, or nothing when the package ships none. ``source["library_files"]``
     (``credited_files``) names the files each credit covers."""
@@ -255,13 +310,13 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     files = list(source.get("library_files") or [])
     lines = ["", HEADING, ""]
     for row in rows:
-        lines += textwrap.wrap(credit_text(row, files), width=width, subsequent_indent="  ", break_long_words=False,
-                               break_on_hyphens=False)
+        lines += textwrap.wrap(credit_text(row, row["credited_files"] if "credited_files" in row else files),
+                               width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
 __all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
            "VARIATIONS_FILE",
-           "changes", "credit",
-           "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
+           "changes", "credit", "credited",
+           "credit_text", "credited_files", "further_credits", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
            "topology_digest"]

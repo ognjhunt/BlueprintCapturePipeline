@@ -1086,7 +1086,7 @@ def _layer_units(path: Path) -> tuple[str | None, float | None]:
 _SAYS = {"scene_appearance": "the look file, which shows how the site looks",
          "scene_collision": "the site's surfaces for contact",
          "task_object": "the job's object, at its start position", "task_support": "the surface the object goes on",
-         "replacement": "a stand-in part of the site"}
+         "replacement": "a stand-in part of the site", "job_object": "another of the job's objects, where the video shows it"}
 
 
 def _root_offset(path: Path) -> dict[str, list[float]] | None:
@@ -1402,7 +1402,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
                                                        encoding="utf-8")
         varied = variations.write(source, staging, placed)  # each object's simulated variations, said to be so
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
+        credited = library_notes.credited(source, staging, placed)  # every file of each model, by its credit
         (staging / "README.txt").write_text(_readme({**source, **credited, **varied}, placed, [*names, "README.txt"],
                                                     units, offsets, plys, first_written), encoding="utf-8")
         on_time()

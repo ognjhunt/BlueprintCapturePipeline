@@ -1076,6 +1076,7 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
     from .team_scene_packet import (
         SCENE_DIRECTORY,
         fetch_team_scene_sources,
+        further_objects_for,
         materialize_team_scene,
         record_team_scene,
         with_movable_furniture,
@@ -1090,7 +1091,9 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
         **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
         **({"embodiment_models": dict(models)} if embodiments and models else {}),
         # What the intent knows of its movable furniture is read here, on the host, as ``prepare_team_scene`` does.
-        **with_movable_furniture(_intent_scopes(owner_scope), revision=revision), **website}
+        **with_movable_furniture(_intent_scopes(owner_scope), revision=revision), **website,
+        # A several-object job's further objects, read on the host; their compile stays there (the remote planner).
+        **further_objects_for(capture, revision)}
     try:
         plan: Any = lane.plan_remote_team_scene(
             request={"request_id": status["request_key"], "request_digest": request["request_digest"],

@@ -336,3 +336,215 @@ def test_an_unexpected_fault_in_one_further_object_leaves_that_object_in_the_sca
     (mug,) = record["objects"]
     assert (mug["prim_path"], mug["runtime_name"]) == ("/World/Object_02", "job_object_02")
     assert mug["replacement_asset_id"].endswith("-03")
+
+# --- the scene half and the company's package ---------------------------------------------------------------------
+
+#: Where the further objects stand in the scene half's fixture room: on the task object's support, beside it.
+ROOM_POSES = {"job_object_02": [2.7, -6.76, 0.75], "job_object_03": [2.97, -6.45, 0.75]}
+
+
+def _composed(tmp_path: Path) -> tuple[Path, dict]:
+    """A capture whose preparation composed the carton and the mug box, and that preparation's bytes."""
+    capture = tmp_path / "capture"
+    arguments = _job(tmp_path / "job", ["carton-1", "mug-1"])
+    arguments["output_root"] = capture / "pipeline" / "website_scene_preparation"
+    value = preparation.compile_website_scene_preparation(
+        **arguments, further_objects=_inputs(arguments, [_plan_row("carton-1"), _plan_row("mug-1")]))
+    assert [row["prim_path"] for row in value["further_objects"]["objects"]] == ["/World/Object_02", "/World/Object_03"]
+    return capture, value
+
+
+def _revision(capture: Path) -> dict:
+    """A website revision's source: the staged preparation, named by its bytes (``website_half_preparation``)."""
+    data = (capture / "pipeline" / "website_scene_preparation" / "preparation.json").read_bytes()
+    return {"source": {"manifest": {"uri": "s3://scenes/x/website/preparation.json",
+                                    "digest": "sha256:" + hashlib.sha256(data).hexdigest()}}}
+
+
+def _in_room(found: dict) -> dict:
+    """The further objects as a half reads them, set beside the fixture room's task object: the fixture room is
+    another scene than the compile fixture's, so only their poses are moved, never their files or ids."""
+    return {**found, "objects": [{**row, "pose_world": {"position_world_m": ROOM_POSES[row["runtime_name"]],
+                                                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}
+                                 for row in found["objects"]]}
+
+
+def _half(tmp_path: Path, further_objects: dict | None, **flags) -> tuple[dict, dict, dict]:
+    from blueprint_pipeline.team_scene_packet import materialize_team_scene
+    from tests import test_team_scene_packet as packet_tests
+    (tmp_path / "half").mkdir(parents=True)
+    scene = packet_tests._scene(tmp_path / "half")
+    inputs = {key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")}
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "half" / "team-scene", package_only=True,
+                                      **({"further_objects": further_objects} if further_objects else {}), **flags)
+    record = json.loads(Path(compiled["path"]).read_text())
+    folder = Path(compiled["path"]).parent
+    plans = [folder / name / plan for name, plan in (("native-task-packet-three-view", "native_task_arena_scene_plan.v1.json"),
+                                                   ("native-task-packet", "native_task_arena_scene_plan.v1.json"),
+                                                   ("scene-package", "scene_package_plan.v1.json"))]
+    plan = json.loads(next(path for path in plans if path.is_file()).read_text())
+    return compiled, record, plan
+
+
+def _with_rule(plan: dict, record: dict) -> dict:
+    """The plan with the success contract its half sealed in its record (as the package reads it)."""
+    return {**plan, "task_spec": {**plan["task_spec"], "task_success_contract": record["task_success_contract"]}}
+
+
+def test_a_website_revision_names_its_further_objects_by_its_preparations_bytes(tmp_path):
+    capture, value = _composed(tmp_path)
+    found = further.for_revision(capture, _revision(capture))
+    assert found["record_digest"] == value["further_objects"]["digest"] and further.LEFT_OUT not in found
+    assert [Path(row["asset_path"]).is_file() for row in found["objects"]] == [True, True]
+    # Not a website revision, another preparation's bytes, or nothing composed: none, so the half is as before.
+    assert further.for_revision(capture, {"source": {"manifest": {"uri": "s3://x/manifest.json"}}}) is None
+    assert further.for_revision(capture, {"source": {"manifest": {"uri": "s3://x/website/preparation.json",
+                                                                  "digest": "sha256:" + "0" * 64}}}) is None
+    from blueprint_pipeline.team_scene_packet import further_objects_for
+    assert further_objects_for(capture, {}) == {}
+    # A file changed since it was composed is left out, said why; the other object still comes.
+    changed = Path(found["objects"][0]["asset_path"])
+    changed.write_bytes(changed.read_bytes() + b"\n")
+    again = further.for_revision(capture, _revision(capture))
+    assert [row["runtime_name"] for row in again["objects"]] == ["job_object_03"]
+    assert again[further.LEFT_OUT] == {"reason": "further_object_asset_changed", "prims": ["/World/Object_02"]}
+
+
+def test_the_scene_half_places_each_further_object_after_the_task_row_under_its_own_name(tmp_path):
+    capture, _value = _composed(tmp_path)
+    found = _in_room(further.for_revision(capture, _revision(capture)))
+    compiled, record, plan = _half(tmp_path, found)
+    assert record.get("robot_station_absent") is None  # the arm's packet took them
+    rows = [(row["name"], row["semantic_role"], row["prim_path"]) for row in plan["objects"]]
+    assert rows[2:] == [("task_object", "task_object", "{ENV_REGEX_NS}/task_object"),
+                        ("job_object_02", "job_object", "{ENV_REGEX_NS}/job_object_02"),
+                        ("job_object_03", "job_object", "{ENV_REGEX_NS}/job_object_03")]
+    by_name = {row["name"]: row for row in plan["objects"]}
+    assert [by_name[name]["asset_id"] for name in ("job_object_02", "job_object_03")] == [
+        row["runtime_asset_id"] for row in found["objects"]]
+    assert {by_name[name]["object_type"] for name in ROOM_POSES} == {"RIGID"}
+    assert by_name["task_object"]["task_subject"] is True
+    assert not any(by_name[name]["task_subject"] for name in ROOM_POSES)
+    assert {name: by_name[name]["pose_world"]["position_world_m"] for name in ROOM_POSES} == ROOM_POSES
+    assert record["further_objects"] == {"record_digest": found["record_digest"],
+                                         "composed": ["job_object_02", "job_object_03"]}
+    from blueprint_pipeline.scene_package_stage import neutral_rule, placements
+    assert [(row["prim"], row["role"], row["name"]) for row in placements(plan)][2:] == [
+        ("Object", "task_object", "object"), ("Object_02", "job_object", "scene/object_02"),
+        ("Object_03", "job_object", "scene/object_03")]
+    rule = neutral_rule(_with_rule(plan, record), packet=Path(compiled["path"]).parent / "native-task-packet")
+    assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02", "/World/Object_03"]
+    # The rule still scores the top-ranked object: its start is the task object's.
+    assert rule["object_start"]["position_m"] == by_name["task_object"]["pose_world"]["position_world_m"]
+
+
+def test_a_half_without_further_objects_is_as_before(tmp_path):
+    _compiled, record, plan = _half(tmp_path, None)
+    assert "further_objects" not in record
+    assert [row["semantic_role"] for row in plan["objects"]] == ["scene_collision", "scene_appearance", "task_object"]
+    from blueprint_pipeline.scene_package_stage import neutral_rule
+    rule = neutral_rule(_with_rule(plan, record))
+    assert "scored_object" not in rule and "not_scored" not in rule
+
+
+def test_a_packet_writer_that_refuses_the_extra_rows_has_them_dropped_flagged_and_the_half_goes_on(tmp_path):
+    capture, _value = _composed(tmp_path)
+    found = further.for_revision(capture, _revision(capture))  # their filmed poses lie outside the fixture room's look
+    _compiled, record, plan = _half(tmp_path, found)
+    assert [row["semantic_role"] for row in plan["objects"]] == ["scene_collision", "scene_appearance", "task_object"]
+    left_out = record["further_objects"][further.LEFT_OUT]
+    assert record["further_objects"]["composed"] == []
+    assert left_out["runtime_names"] == ["job_object_02", "job_object_03"]
+    assert "job_object" in left_out["reason"]
+    # A refusal that names no further row is raised as before.
+    with pytest.raises(ValueError, match="other"):
+        further.refused_rows_dropped(lambda _: (_ for _ in ()).throw(ValueError("other")),
+                                     {"assets": [{"semantic_role": "job_object", "name": "job_object_02"}]},
+                                     output_dir=tmp_path / "none")
+
+
+def test_the_runtime_contract_takes_further_rows_only_by_their_own_distinct_names():
+    from blueprint_pipeline.native_task_runtime_contract import _asset_rows
+    row = {"filename": "a.usda", "sha256": "sha256:" + "1" * 64, "object_type": "RIGID",
+           "pose_world": {"position_world_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]},
+           "reset_state": {"root_pose_world": {}, "joint_positions": {}}}
+    base = [{**row, "semantic_role": "scene_collision"}, {**row, "semantic_role": "task_object", "asset_id": "obj"}]
+    for names, refused in ((["job_object_02", "job_object_03"], False), (["job_object_02", "job_object_02"], True),
+                           (["task_object"], True)):
+        errors: list[str] = []
+        rows, _ = _asset_rows([*base, *({**row, "semantic_role": "job_object", "name": name, "asset_id": name}
+                                        for name in names)], subject_asset_id="obj", errors=errors)
+        assert ("native_task_runtime_asset_role_invalid:job_object" in errors) is refused
+        if not refused:
+            assert [(item["runtime_name"], item["task_subject"]) for item in rows][-2:] == [
+                ("job_object_02", False), ("job_object_03", False)]
+
+
+def test_the_robot_absent_writer_keeps_every_row_of_a_repeated_role(tmp_path):
+    from blueprint_pipeline import team_scene_robot_absent as absent
+    pose = {"position_world_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]}
+    source = {"root": "evidence", "relative_path": "x", "size_bytes": 1, "sha256": "sha256:" + "1" * 64}
+    assets = [{"semantic_role": "scene_collision", "filename": "collision.usda", "pose_world": pose, "source": source},
+              {"semantic_role": "task_object", "filename": "first.usda", "pose_world": pose, "source": source},
+              {"semantic_role": "task_object", "filename": "second.usda", "pose_world": pose, "source": source},
+              {"semantic_role": "job_object", "name": "job_object_02", "filename": "job_object_02.usda",
+               "pose_world": pose, "source": source, "object_type": "RIGID"}]
+    rows = absent._rows(assets, task_spec={"task_kind": "rigid_pick_place"})
+    # Before, the second task_object row replaced the first in the composition's by-role read.
+    assert [row["filename"] for row in rows] == ["collision.usda", "first.usda", "second.usda", "job_object_02.usda"]
+    assert rows[3]["name"] == "job_object_02" and rows[3]["object_type"] == "RIGID"
+
+
+def test_a_half_without_the_arm_keeps_both_further_objects(tmp_path, monkeypatch):
+    from blueprint_pipeline import team_embodiment_stance as stance
+    from blueprint_pipeline.team_embodiment import TeamEmbodimentError
+
+    def no_stance(**_):
+        raise TeamEmbodimentError(["team_embodiment_task_motion_no_clear_stance"])
+    monkeypatch.setattr(stance, "ground_stance", no_stance)
+    capture, _value = _composed(tmp_path)
+    found = further.for_revision(capture, _revision(capture))
+    _compiled, record, plan = _half(tmp_path, found)
+    assert record["robot_station_absent"]["reason"] == "team_embodiment_task_motion_no_clear_stance"
+    assert [(row["name"], row["semantic_role"], row["task_subject"]) for row in plan["objects"]][2:] == [
+        ("task_object", "task_object", True), ("job_object_02", "job_object", False),
+        ("job_object_03", "job_object", False)]
+    assert record["further_objects"]["composed"] == ["job_object_02", "job_object_03"]
+
+
+def test_the_package_places_both_further_objects_scores_only_the_scored_one_and_credits_the_library_model(tmp_path):
+    import zipfile
+
+    from pxr import Usd, UsdGeom
+
+    from tests.test_website_company_simulation import Job, World, _package
+    capture, value = _composed(tmp_path)
+    compiled, _record, _plan = _half(tmp_path, _in_room(further.for_revision(capture, _revision(capture))))
+    job = Job(tmp_path / "download")
+    # The half's preparation, as the package reads its notes and credits (``website_half_preparation``).
+    job.preparation.write_text(json.dumps({"further_objects": value["further_objects"]}))
+    status = next((job.queue / "status").glob("*.json"))
+    status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": compiled["path"]}))
+    result = World(job).publish()
+    assert result["status"] == "published", result
+    with zipfile.ZipFile(_package(job)) as archive:
+        names = archive.namelist()
+        archive.extractall(tmp_path / "unpacked")
+    assert {"scene/object_02.usda", "scene/object_03.usda", "success_rule.json"} <= set(names), names
+    stage = Usd.Stage.Open(str(tmp_path / "unpacked" / "scene.usda"))
+    for prim, name in (("/World/Object_02", "job_object_02"), ("/World/Object_03", "job_object_03")):
+        placed = UsdGeom.Xformable(stage.GetPrimAtPath(prim)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        assert list(placed.ExtractTranslation()) == pytest.approx(ROOM_POSES[name])
+    rule = json.loads((tmp_path / "unpacked" / "success_rule.json").read_text())
+    assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02", "/World/Object_03"]
+    readme = " ".join((tmp_path / "unpacked" / "README.txt").read_text().split())
+    assert ("success_rule.json scores only the job's object, /World/Object. /World/Object_02 and /World/Object_03 are "
+            "also the job's objects, placed where the video shows them; the rule does not score them.") in readme
+    assert "scene/object_02.usda (/World/Object_02): another of the job's objects, where the video shows it." in readme
+    # The library model's geometry ships with its credit, naming the files that hold it, and only those.
+    credit = readme.split("Library models", 1)[1]
+    assert "Test Mug Box by Google" in credit and "scene/object_03.usda" in credit
+    scored = next(name for name in names if name.startswith("object."))
+    assert "scene/object_02.usda" not in credit and scored not in credit
+    variations = json.loads((tmp_path / "unpacked" / "variations.json").read_text())
+    assert {row["part"] for row in variations["objects"]} >= {"/World/Object_02", "/World/Object_03"}
