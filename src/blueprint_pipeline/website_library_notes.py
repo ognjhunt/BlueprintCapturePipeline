@@ -136,13 +136,96 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
     return {"library_models": [row]}
 
 
+#: A further object of the job's in the package that the preparation it was built from does not account for, by its
+#: identity (``further_parts``): whether its file holds a library model cannot be told, so it may not leave uncredited.
+FURTHER_UNACCOUNTED = "website_company_simulation_further_object_unaccounted"
+
+
+def _identity(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A further object's stable identity, as its preparation recorded it (``website_further_objects``): its rank,
+    its replacement id, the runtime asset id its scene half's row carries, and the digest of the file it ships as. Never
+    its prim: a half that leaves an earlier further object out renumbers the ones after it."""
+    asset = row.get("asset") if isinstance(row.get("asset"), Mapping) else {}
+    return {"rank": row.get("rank"), "replacement_asset_id": row.get("replacement_asset_id"),
+            "runtime_asset_id": row.get("runtime_asset_id"), "asset_sha256": asset.get("sha256")}
+
+
+def further_credits(preparation: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """Each further object of the job the preparation composed (its ``further_objects``, ``website_further_objects``),
+    by its stable identity (``further_parts``: what the package may place), and the credit of each library model one
+    was authored from, as ``credit`` reads one, marked with that identity (``further_object``):
+    ``{"library_models": rows, "further_parts": identities}``, ``{"library_refusal": code}`` when a model cannot be
+    credited (its geometry never ships without its credit), empty without any. A credit is matched to the part that
+    ships by that identity, at its final prim (``credited``). Its model's own file is not shipped apart: its credit names
+    the shipped files that hold its geometry."""
+    record = preparation.get("further_objects") if isinstance(preparation, Mapping) else None
+    rows: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
+    for row in (record.get("objects") or []) if isinstance(record, Mapping) else []:
+        if not isinstance(row, Mapping):
+            continue
+        identity = _identity(row)
+        parts.append({**identity, "source": row.get("source")})
+        if row.get("source") != "library":
+            continue
+        found = credit({"library_design": row.get("library_design")}, capture_root)
+        if "library_refusal" in found:
+            return {"library_refusal": found["library_refusal"]}
+        rows += [{**item, "file": None, "path": None, "sha256": None, "further_object": identity}
+                 for item in found["library_models"]]
+    return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {})}
+
+
+def merged(*credits: Mapping[str, Any]) -> dict[str, Any]:
+    """Several ``credit`` results as one: a refusal when any refuses, else every model in order and every further part
+    accounted for; empty without any."""
+    refused = next((item["library_refusal"] for item in credits if item.get("library_refusal")), None)
+    if refused:
+        return {"library_refusal": refused}
+    rows = [row for item in credits for row in item.get("library_models") or []]
+    parts = [row for item in credits for row in item.get("further_parts") or []]
+    return {**({"library_models": rows} if rows else {}), **({"further_parts": parts} if parts else {})}
+
+
+def further_prims(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """Each further object's part the package places, by its final prim (``Object_02``...: the plan's order, after any
+    renumbering), with the identity its plan row and file give: its runtime asset id and its file's digest."""
+    from .scene_package_stage import FURTHER_ROLE, StageRefused, placements
+    plan, files = source.get("plan") or {}, source.get("files") or {}
+    try:
+        rows = placements(plan)
+    except StageRefused:
+        return {}
+    return {placed["prim"]: {"runtime_asset_id": str(raw.get("asset_id") or ""),
+                             "asset_sha256": str(files[placed["prim"]].get("sha256") or "")}
+            for placed, raw in zip(rows, plan.get("objects") or [])
+            if placed["role"] == FURTHER_ROLE and placed["prim"] in files}
+
+
+def _matches(identity: Mapping[str, Any], shipped_as: Mapping[str, str]) -> bool:
+    """Whether a part shipped as ``shipped_as`` is the further object ``identity`` names: the same runtime asset id and
+    the same file bytes, both, never its prim."""
+    return (bool(identity.get("runtime_asset_id")) and identity.get("runtime_asset_id") == shipped_as["runtime_asset_id"]
+            and bool(identity.get("asset_sha256")) and identity.get("asset_sha256") == shipped_as["asset_sha256"])
+
+
 def refusal(source: Mapping[str, Any]) -> str | None:
     """Why the package may not leave with the job's object in it: the object was built from a library model whose
-    credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``). A package
-    without the object (the room floor) is not refused: ``website_company_simulation`` ships it instead."""
+    credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``); or a further
+    object's part ships that its preparation does not account for by its identity (``FURTHER_UNACCOUNTED``), so
+    whether it holds a library model, and whose, cannot be told. A package without the object (the room floor) is not
+    refused: ``website_company_simulation`` ships it instead."""
     files = source.get("files") or {}
     with_object = any(isinstance(row, Mapping) and row.get("role") == "task_object" for row in files.values())
-    return str(source["library_refusal"]) if with_object and source.get("library_refusal") else None
+    if not with_object:
+        return None
+    if source.get("library_refusal"):
+        return str(source["library_refusal"])
+    parts = [row for row in source.get("further_parts") or [] if isinstance(row, Mapping)]
+    for shipped_as in further_prims(source).values():
+        if not any(_matches(row, shipped_as) for row in parts):
+            return FURTHER_UNACCOUNTED
+    return None
 
 
 def shipped(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -225,7 +308,7 @@ def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str
     part and the USD layers it uses, any other shipped USD file with a mesh of the model's topology (read from its
     own file, or as recorded when it was written), and the layer of its simulated variations (``VARIATIONS_FILE``).
     Empty without a model."""
-    rows = shipped(source)
+    rows = [row for row in shipped(source) if not row.get("further_object")]  # a further object's: ``credited``
     if not rows:
         return []
     staging = Path(staging)
@@ -246,6 +329,46 @@ def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str
     return [*first, *sorted(names - set(first))]
 
 
+def _part_files(row: Mapping[str, Any], staging: Path, placed: Mapping[str, str], prims: Sequence[str]) -> list[str]:
+    """The shipped files that hold a further object's library model: the parts it ships as (``prims``, its final prims)
+    and the USD layers they use, any other shipped USD file with a mesh of its model's topology, and the layer of its
+    simulated variations."""
+    own = [placed[prim] for prim in prims if prim in placed]
+    names = set().union(*(_uses(staging, staging / name) for name in own)) | (
+        {VARIATIONS_FILE} if (staging / VARIATIONS_FILE).is_file() else set())
+    topology = {(int(row["topology"][0]), str(row["topology"][1]))} if row.get("topology") else set()
+    for path in sorted(item for item in staging.rglob("*") if item.is_file()) if topology else []:
+        relative = path.relative_to(staging).as_posix()
+        if relative not in names and path.suffix.lower() in USD_SUFFIXES and mesh_topologies(
+                path, {length for length, _ in topology}) & topology:
+            names.add(relative)
+    return [*own, *sorted(names - set(own))]
+
+
+def credited(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -> dict[str, Any]:
+    """What the README's credits name: ``library_files``, every file of the job's object's model
+    (``credited_files``), and, when a further object's model is credited, each model's own files on its credit row
+    (``credited_files`` on ``library_models``). A further object's credit follows it by its identity to the part it
+    ships as (``further_prims``), whatever prim that is after renumbering (``part``); a model whose object does not ship
+    is not credited, and a part no credit or record accounts for never leaves (``refusal``)."""
+    found: dict[str, Any] = {"library_files": credited_files(source, staging, placed)}
+    rows = shipped(source)
+    if any(row.get("further_object") for row in rows):
+        prims = further_prims(source)
+        kept = []
+        for row in rows:
+            if not row.get("further_object"):
+                kept.append(row)
+                continue
+            matched = sorted(prim for prim, shipped_as in prims.items()
+                             if prim in placed and _matches(row["further_object"], shipped_as))
+            if matched:
+                kept.append({**row, "part": matched[0], "credited_files": _part_files(row, Path(staging), placed,
+                                                                                       matched)})
+        found["library_models"] = kept
+    return found
+
+
 def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     """The README's "Library models" section, or nothing when the package ships none. ``source["library_files"]``
     (``credited_files``) names the files each credit covers."""
@@ -255,13 +378,13 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     files = list(source.get("library_files") or [])
     lines = ["", HEADING, ""]
     for row in rows:
-        lines += textwrap.wrap(credit_text(row, files), width=width, subsequent_indent="  ", break_long_words=False,
-                               break_on_hyphens=False)
+        lines += textwrap.wrap(credit_text(row, row["credited_files"] if "credited_files" in row else files),
+                               width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
 __all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
            "VARIATIONS_FILE",
-           "changes", "credit",
-           "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
+           "changes", "credit", "credited",
+           "FURTHER_UNACCOUNTED", "credit_text", "credited_files", "further_credits", "further_prims", "merged", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
            "topology_digest"]

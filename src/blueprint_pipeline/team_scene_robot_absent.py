@@ -134,11 +134,15 @@ def stage_records(adapter: Mapping[str, Any]) -> tuple[dict[str, Any] | None, di
 
 
 def _rows(assets: Sequence[Mapping[str, Any]], *, task_spec: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each row's spawn type and visibility, as the packet's runtime contract resolves them."""
+    """Each row's spawn type and visibility, as the packet's runtime contract resolves them. A role's first row is
+    the one the composition reads; a row of a role repeated after it (a further object of the job,
+    ``website_further_objects``) keeps its own place, name and pose, and never replaces it."""
 
     from .articulated_runtime_composition import plan_articulated_runtime_composition
 
-    by_role = {str(row["semantic_role"]): row for row in assets}
+    by_role: dict[str, Mapping[str, Any]] = {}
+    for row in assets:
+        by_role.setdefault(str(row["semantic_role"]), row)
     task_object = by_role["task_object"]
     composition = plan_articulated_runtime_composition(
         task_spec=task_spec, twin_usd_filename=str(task_object["filename"]),
@@ -151,7 +155,7 @@ def _rows(assets: Sequence[Mapping[str, Any]], *, task_spec: Mapping[str, Any]) 
     for row in assets:
         role = str(row["semantic_role"])
         rows.append({**{key: row[key] for key in ("semantic_role", "filename", "pose_world", "source")},
-                     **{key: row[key] for key in ("asset_id", "source_asset_id", "reset_state",
+                     **{key: row[key] for key in ("name", "asset_id", "source_asset_id", "reset_state",
                                                   "articulation_adaptation") if key in row},
                      "object_type": (planned.get(role) or {}).get("object_type") or row.get("object_type") or "RIGID",
                      "visible": bool((planned.get(role) or {}).get("visible", row.get("visible", True)))})
@@ -175,7 +179,7 @@ def materialize_scene_package(*, assets: Sequence[Mapping[str, Any]], task_spec:
     if output.exists():
         raise NativeTaskArenaPacketError(["native_task_arena_packet_output_exists"])
     (output / "assets").mkdir(parents=True)
-    objects, bindings = [], []
+    objects, bindings, subject_named = [], [], False
     for row in _rows(assets, task_spec=task_spec):
         role, filename = row["semantic_role"], str(row["filename"])
         source, digest, _size = _asset_source(row, evidence_root=evidence)
@@ -195,13 +199,17 @@ def materialize_scene_package(*, assets: Sequence[Mapping[str, Any]], task_spec:
                          "staged_relative_path": f"assets/{filename}", "staged_sha256": staged,
                          "staged_size_bytes": destination.stat().st_size,
                          **({"static_scene_collision_adaptation": adaptation} if adaptation else {})})
-        objects.append({"name": role, "semantic_role": role, "asset_id": row.get("asset_id", role),
-                        "task_subject": role == "task_object", "object_type": row["object_type"],
+        # Each row's own runtime name when it has one (a further object's), else its role; the first task row is the
+        # task's subject.
+        objects.append({"name": str(row.get("name") or role), "semantic_role": role,
+                        "asset_id": row.get("asset_id", role),
+                        "task_subject": role == "task_object" and not subject_named, "object_type": row["object_type"],
                         "usd_path": f"assets/{filename}", "sha256": staged,
                         "size_bytes": destination.stat().st_size, "visible": row["visible"],
                         "pose_world": row["pose_world"],
                         "reset_state": row.get("reset_state") or {"root_pose_world": row["pose_world"],
                                                                   "joint_positions": {}}})
+        subject_named = subject_named or role == "task_object"
     subject = next(row for row in objects if row["semantic_role"] == "task_object")
     try:
         observability: dict[str, Any] | None = {

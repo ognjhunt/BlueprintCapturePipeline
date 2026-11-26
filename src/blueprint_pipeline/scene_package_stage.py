@@ -38,9 +38,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-#: The neutral prim name for each role the scene plan uses.
+#: The neutral prim name for each role the scene plan uses. A further object of the job (``job_object``,
+#: ``website_further_objects``) is one of the job's objects too: after the task row, ``/World/Object_02`` onward.
 ROLE_PRIMS = {"scene_appearance": "Room", "scene_collision": "RoomCollision", "task_object": "Object",
-              "task_support": "Support", "replacement": "Replacement"}
+              "task_support": "Support", "replacement": "Replacement", "job_object": "Object"}
+#: The role of a further object of the job: placed, never scored (``neutral_rule``'s ``not_scored``).
+FURTHER_ROLE = "job_object"
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 _MODE_WORD = re.compile(r"[a-z][a-z_]{0,40}")
 #: The success criteria's own keys (rigid_task_success_contract.v1 and what the scorer reads). Nothing else ships.
@@ -453,6 +456,10 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
     ``basis``: for each number of the rule the preparation set, whether the site's own words state it
     (``site_stated``), it is the goal area's radius (``destination_area``) or Blueprint's default (``assumed``); it
     goes under ``criteria_basis``, by the preparation's field names. Never the site's words themselves.
+
+    The rule scores the job's object (the plan's first ``task_object`` row) alone. A plan that also places further
+    objects of the job (``FURTHER_ROLE`` rows) says so: ``scored_object`` is the scored object's prim and
+    ``not_scored`` lists each further object's, in scene.usda's order. A plan without any has neither key.
     """
     criteria = ((plan.get("task_spec") or {}).get("task_success_contract") or {}).get("criteria")
     if not isinstance(criteria, Mapping):
@@ -463,6 +470,10 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
     kept, left_out = neutral_criteria(criteria, support_prim=support, joints=joints)
     rule: dict[str, Any] = {"units": {}, "up_axis": up_axis(plan, packet=packet), "criteria": kept,
                             "criteria_fields_left_out": left_out}
+    further = [f"/World/{row['prim']}" for row in rows if row["role"] == FURTHER_ROLE]
+    scored = next((f"/World/{row['prim']}" for row in rows if row["role"] == "task_object"), None)
+    if further and scored is not None:
+        rule.update(scored_object=scored, not_scored=further)
     cadence = plan.get("cadence") if isinstance(plan.get("cadence"), Mapping) else {}
     timing = {key: cadence[key] for key in ("physics_frequency_hz", "control_frequency_hz", "episode_length_seconds")
               if isinstance(cadence.get(key), (int, float)) and not isinstance(cadence.get(key), bool)
@@ -493,6 +504,6 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
     return rule
 
 
-__all__ = ["CRITERIA_KEYS", "JOINT_BLOCKS", "JOINT_KINDS", "MODE_WORDS", "ROLE_PRIMS", "SUFFIX_UNITS", "WORLD_FRAME_ROLES",
+__all__ = ["CRITERIA_KEYS", "FURTHER_ROLE", "JOINT_BLOCKS", "JOINT_KINDS", "MODE_WORDS", "ROLE_PRIMS", "SUFFIX_UNITS", "WORLD_FRAME_ROLES",
            "StageRefused", "joint_prims", "neutral_criteria", "neutral_rule", "package_name", "placements", "rule_units",
            "up_axis", "write_stage"]

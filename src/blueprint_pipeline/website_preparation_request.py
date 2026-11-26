@@ -10,7 +10,9 @@ compose-back record is the pose the rebuilt object is set back at in the room, o
 One object per job today. The records moved here from compile unchanged, byte for byte
 (``tests/test_website_preparation_request.py``), so several objects per job have one place to grow. A several-object
 job's further objects go in the request's ``task.additional_objects`` (``additional_objects``), each by its rank and a
-subject built as the scored one's is; no live caller names any yet, so every request leaves the field out.
+subject built as the scored one's is; no live caller names any yet, so every request leaves the field out. Each object
+composed back has its own replacement id (``replacement_id``) and compose-back record (``compose_back_record`` with its
+``rank``); the scored object's are unchanged.
 """
 from __future__ import annotations
 
@@ -108,12 +110,21 @@ def intake_request(*, capture_id: str, task_context: Mapping[str, Any], base_sce
     }
 
 
+def replacement_id(task_context: Mapping[str, Any], rank: int | None = None) -> str:
+    """The rebuilt object's replacement id: the scored object's (``rank`` None or 1) as it always was, and each further
+    object's the same with its rank appended (``-02`` to ``-08``), so every object of a job has its own, the same on
+    every run."""
+    base = "website-subject-" + task_context["context_digest"][7:27]
+    return base if rank in (None, 1) else f"{base}-{int(rank):02d}"
+
+
 def compose_back_record(*, task_context: Mapping[str, Any], subject_min: Sequence[float],
                         subject_max: Sequence[float], base_scene: Mapping[str, Any], meters_per_unit: float,
-                        snap: float, registration_path: Path) -> dict[str, Any]:
+                        snap: float, registration_path: Path, rank: int | None = None) -> dict[str, Any]:
     """Where the rebuilt object goes back in the room: its bounds' centre in runtime units, upright, with the
-    registration that put it there."""
-    return {"replacement_asset_id": "website-subject-" + task_context["context_digest"][7:27],
+    registration that put it there. ``rank``: a further object's, which names its own replacement id
+    (``replacement_id``); the scored object's record is as it always was."""
+    return {"replacement_asset_id": replacement_id(task_context, rank),
             "pose_world": {"position": [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
                            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                            "unit": base_scene["up_axis"] + "-up runtime units",
@@ -132,4 +143,4 @@ def composed_removal_manifest(removal_manifest: Mapping[str, Any],
 
 
 __all__ = ["CLAIM_CEILING", "additional_objects", "compose_back_record", "composed_removal_manifest", "geometry_origin",
-           "intake_request", "request_subject"]
+           "intake_request", "replacement_id", "request_subject"]

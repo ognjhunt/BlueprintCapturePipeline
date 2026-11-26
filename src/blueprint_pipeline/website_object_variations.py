@@ -445,7 +445,8 @@ def write(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -
     part it places, and returns ``{"variations": summary}`` for the README (``readme_lines``); empty for a package
     without the job's object. Never raises for a fault of its own: the package ships without them, logged."""
     files = source.get("files") or {}
-    parts = [prim for prim in placed if _mapping(files.get(prim)).get("role") == "task_object"]
+    # The job's object and each further object of it (``job_object``: default bands, ``EVIDENCE_PART`` is the first's).
+    parts = [prim for prim in placed if _mapping(files.get(prim)).get("role") in ("task_object", "job_object")]
     if not parts or source.get("room") is not None:
         return {}
     stop = rights_stop(source)

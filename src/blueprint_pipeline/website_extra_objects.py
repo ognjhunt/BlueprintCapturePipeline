@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
-from .website_build_plan import built_objects
+from .website_build_plan import built_objects, built_rank
 from .website_parametric_object import SHAPES
 
 SCHEMA_VERSION = "website_extra_object_sources.v1"
@@ -128,8 +128,9 @@ def extra_object_sources(plan: Mapping[str, Any] | None, *, entries: Sequence[Ma
                          editor_objects: Sequence[Mapping[str, Any]], task_context: Mapping[str, Any],
                          library_root: Path, catalog_entries: Sequence[Mapping[str, Any]] | None = None
                          ) -> dict[str, Any]:
-    """The record of each object the plan would build after its first (``built_objects``), in the plan's order: the
-    free source it could use, or ARTISAN at its cap (``new_authoring_budget``, as its reservation would freeze it),
+    """The record of each object the plan would build after its first (``built_objects``), in the plan's order and
+    ranked as the intake request ranks it (``built_rank``: 2 for the first further object): the free source it could
+    use, or ARTISAN at its cap (``new_authoring_budget``, as its reservation would freeze it),
     with nothing reserved. ``entries`` are the removal manifest's rows and ``editor_objects`` the scene editor's, as
     ``built_objects`` reads them; ``library_root`` holds each extra object's sealed pick (``object_root``). Reads only;
     writes, reserves, spends and asks nothing. A plan with one object it would build, or none, has no extra object."""
@@ -138,11 +139,10 @@ def extra_object_sources(plan: Mapping[str, Any] | None, *, entries: Sequence[Ma
     rows = {row["target_id"]: row for row in (plan or {}).get("objects") or []}
     analysis = {str(row.get("target_id")): row for row in entries if row.get("task_effect") == "manipulated"}
     cap = new_authoring_budget()["maximum_cost_usd"]
-    objects = [{"rank": rank, **free_source(rows[item["target_id"]], entry=analysis.get(item["target_id"]),
-                                           root=object_root(library_root, item["target_id"]),
-                                           task_context=task_context, artisan_cap_usd=cap,
-                                           catalog_entries=catalog_entries)}
-               for rank, item in enumerate(built[1:], start=1)]
+    objects = [{"rank": built_rank(position), **free_source(
+        rows[item["target_id"]], entry=analysis.get(item["target_id"]), root=object_root(library_root, item["target_id"]),
+        task_context=task_context, artisan_cap_usd=cap, catalog_entries=catalog_entries)}
+               for position, item in enumerate(built) if position]
     paid = [row for row in objects if not row["free"]]
     record = {"schema_version": SCHEMA_VERSION, "revision": REVISION,
               "task_context_digest": task_context.get("context_digest"),

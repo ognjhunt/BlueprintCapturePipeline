@@ -262,13 +262,30 @@ def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:
     return {}
 
 
+#: The rule of a package that also places further objects of the job (``scene_package_stage.neutral_rule``'s
+#: ``scored_object`` and ``not_scored``): it scores the one object, and says so.
+SCORED_ONLY_NOTE = ("success_rule.json scores only the job's object, {scored}. {others} {are} also the job's objects, "
+                    "placed where the video shows them; the rule does not score {them}.")
+
+
+def _joined(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def object_note(source: Mapping[str, Any]) -> list[str]:
-    """The README's note of what the job's object is, or none."""
+    """The README's note of what the job's object is, or none; and, when the rule scores one object of several, that
+    it does."""
     kind = source.get("object_source")
-    if kind == "parametric":
-        return [PARAMETRIC_NOTE.format(shape=source.get("object_shape") or "simple")]
     notes = {"generated": GENERATED_NOTE, "designed": DESIGNED_NOTE, "library": LIBRARY_NOTE}
-    return [notes[kind]] if kind in notes else []
+    found = ([PARAMETRIC_NOTE.format(shape=source.get("object_shape") or "simple")] if kind == "parametric"
+             else [notes[kind]] if kind in notes else [])
+    rule = source.get("rule") if isinstance(source.get("rule"), Mapping) else {}
+    others = [str(item) for item in rule.get("not_scored") or [] if isinstance(item, str)]
+    if others and isinstance(rule.get("scored_object"), str):
+        found.append(SCORED_ONLY_NOTE.format(scored=rule["scored_object"], others=_joined(others),
+                                             are="is" if len(others) == 1 else "are",
+                                             them="it" if len(others) == 1 else "them"))
+    return found
 
 
 def handoff_base_scene(capture_root: Path) -> dict[str, Any]:
@@ -327,7 +344,10 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
     base = (_beside(root, path) if isinstance(record.get(FIELD), str) and path is not None else {}) \
         or handoff_base_scene(root)
     return {**base_scene_notes(base), **size_notes(preparation), **object_source(configuration),
-            **library_notes.credit(configuration, root), **object_variations.evidence(preparation, root),
+            # The job's object's library model, and each further object's (``website_further_objects``).
+            **library_notes.merged(library_notes.credit(configuration, root),
+                                   library_notes.further_credits(preparation, root)),
+            **object_variations.evidence(preparation, root),
             **mass_basis(preparation),
             "estimates": object_estimates(preparation),
             "basis": success_basis(preparation)}

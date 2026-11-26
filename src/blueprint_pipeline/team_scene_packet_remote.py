@@ -508,6 +508,9 @@ def plan_remote_team_scene(
     entry = config["stages"][STAGE]
     if _ATTEMPT.fullmatch(attempt.name) is None or Path(arguments["output_root"]) != attempt / "scene":
         return HostDecision("remote_ineligible:attempt_unrecognized")
+    if arguments.get("further_objects"):
+        # Their asset files are read on the host and are not in the lane's inputs: the host compiles the half.
+        return HostDecision("remote_ineligible:further_objects_on_host")
     closure = _closure(Path(arguments["configured_scene_bundle_path"]), Path(cache_root or DEFAULT_CACHE_ROOT))
     if isinstance(closure, HostDecision):
         return closure

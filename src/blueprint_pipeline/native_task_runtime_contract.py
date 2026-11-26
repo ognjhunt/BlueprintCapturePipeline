@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -49,6 +50,10 @@ SINGULAR_ASSET_ROLES = (
     "task_support",
 )
 REPEATABLE_REPLACEMENT_ROLE = "replacement"
+#: A further object of a several-object job (``website_further_objects.ROLE``): one rigid body each, spawned after the
+#: task object under its own runtime name, never scored. Each row names itself (``name``).
+FURTHER_OBJECT_ROLE = "job_object"
+_FURTHER_NAME = re.compile(r"job_object_[0-9]{2}")
 OBJECT_TYPES = frozenset({"RIGID", "ARTICULATION"})
 CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
@@ -234,6 +239,7 @@ def _asset_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, Mapping[str, Any]]]:
     by_role: dict[str, Mapping[str, Any]] = {}
     replacements: list[Mapping[str, Any]] = []
+    further: list[Mapping[str, Any]] = []
     for index, row in enumerate(assets):
         if not isinstance(row, Mapping):
             errors.append(f"native_task_runtime_asset_invalid:{index}")
@@ -241,6 +247,9 @@ def _asset_rows(
         role = str(row.get("semantic_role") or "")
         if role == REPEATABLE_REPLACEMENT_ROLE:
             replacements.append(row)
+            continue
+        if role == FURTHER_OBJECT_ROLE:
+            further.append(row)
             continue
         if role not in SINGULAR_ASSET_ROLES or role in by_role:
             errors.append(f"native_task_runtime_asset_role_invalid:{role or index}")
@@ -308,6 +317,11 @@ def _asset_rows(
         )
     elif "task_object" in by_role:
         ordered.append(("task_object", by_role["task_object"], True))
+    names = [str(row.get("name") or "") for row in further]
+    if further and (replacements or task_kind == NAVIGATION_TASK_KIND or len(set(names)) != len(names)
+                    or not all(_FURTHER_NAME.fullmatch(name) for name in names)):
+        errors.append(f"native_task_runtime_asset_role_invalid:{FURTHER_OBJECT_ROLE}")
+    ordered.extend((FURTHER_OBJECT_ROLE, source, False) for source in further)
     for role, source, task_subject in ordered:
         asset_id = str(
             source.get("asset_id")
@@ -331,10 +345,10 @@ def _asset_rows(
         object_type = str(source.get("object_type") or "")
         physical_task_asset = (
             replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}
-        ) or (identified_task_object and role == "task_object") or role == "task_support"
+        ) or (identified_task_object and role == "task_object") or role in {"task_support", FURTHER_OBJECT_ROLE}
         error_scope = (
-            "task_support"
-            if role == "task_support"
+            role
+            if role in {"task_support", FURTHER_OBJECT_ROLE}
             else "replacement"
             if replacements
             else "task_object"
@@ -394,6 +408,8 @@ def _asset_rows(
                     if task_subject
                     else f"replacement__{asset_id}"
                     if role == REPEATABLE_REPLACEMENT_ROLE
+                    else str(source.get("name"))
+                    if role == FURTHER_OBJECT_ROLE
                     else role
                 ),
                 "task_subject": task_subject,
@@ -1142,7 +1158,7 @@ def materialize_native_task_runtime_contract(
                 row["asset_id"]: row["reset_state"]
                 for row in asset_rows
                 if row["semantic_role"]
-                in {"task_object", "replacement", "task_support"}
+                in {"task_object", "replacement", "task_support", FURTHER_OBJECT_ROLE}
             },
         },
         "scoring_contract": {
