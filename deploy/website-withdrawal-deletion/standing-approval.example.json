@@ -5,5 +5,5 @@
   "expires_at": "REPLACE-WITH-UTC-TIME-OR-null",
   "policy_class": "website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1",
   "cool_off_hours": 72,
-  "note": "EXAMPLE ONLY. No deploy step installs this file and it does not validate as shipped (the placeholders fail). The owner installs a filled-in copy once, by hand, as root, mode 0644, at /etc/blueprint/website-withdrawal-deletion-approval.json. See docs/runbooks/beta-operations.md section 8."
+  "note": "EXAMPLE ONLY, for the owner's own file on the host. It does not validate as shipped (the placeholders fail). The owner's recorded approval ships with the release (config/website_withdrawal_deletion_standing_approval.v1.json). A filled-in copy of this example, installed by hand as root, mode 0644, at /etc/blueprint/website-withdrawal-deletion-approval.json, is read instead of the release's whenever it exists: use it to change the cool-off without a deploy, or with an expires_at in the past to stop deletion at once. No deploy step installs it. See docs/runbooks/beta-operations.md section 8."
 }

@@ -1,0 +1,9 @@
+{
+  "schema_version": "website_withdrawal_deletion_standing_approval.v1",
+  "approved_by": "owner",
+  "approved_at": "2026-11-26T20:15:00Z",
+  "expires_at": null,
+  "policy_class": "website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1",
+  "cool_off_hours": 72,
+  "note": "Owner decision 2026-11-26, about 20:15 UTC, after a readiness check found that the first withdrawal on the host (acknowledged 2026-11-25) had deleted nothing: \"i approve - lets fix this for now and future\". Cool-off 72 hours, the value recommended to the owner on 2026-11-22 (Blueprint-WebApp docs/qa/first-principles-audit/owner-questions.md, question 3). It does not name garbage_collection_policy_class: clean-up of content blobs nobody refers to still only plans. A file at /etc/blueprint/website-withdrawal-deletion-approval.json on the host is read instead of this one whenever it exists; an expired one there stops deletion at once."
+}

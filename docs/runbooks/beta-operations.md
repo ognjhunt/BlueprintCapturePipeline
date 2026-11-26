@@ -873,16 +873,32 @@ acknowledgement within 10 business days and completion within 30 days
    - deletes only under the owner's standing approval (below), through the
      deletion tool's own `--apply` path with the plan's exact digest.
 
-Without the approval file the pass only plans. That is the state right after
-the first deploy: it deletes nothing until the owner installs the file.
+Without a valid approval the pass only plans. The owner's approval ships with
+the release since 2026-11-26 (below), so a deployed host has one.
 
 ### The standing approval
 
-AGENTS.md: deleting retained data needs the owner's approval. The owner gives
-it once, as a file the owner installs by hand as root, mode 0644:
-`/etc/blueprint/website-withdrawal-deletion-approval.json`. The example is
-`deploy/website-withdrawal-deletion/standing-approval.example.json`. No deploy
-step installs it, and as shipped it does not validate.
+AGENTS.md: deleting retained data needs the owner's approval. The owner gave it
+on 2026-11-26, with a cool-off of 72 hours. It is recorded in a reviewed,
+committed file, `config/website_withdrawal_deletion_standing_approval.v1.json`,
+which every release carries, as the month's spend limit is. A deploy installs
+it and a rebuilt host has it; nobody installs anything by hand.
+
+Before that date the approval existed only as a file the owner had to install
+as root. None was ever installed, so the first withdrawal (acknowledged
+2026-11-25) deleted nothing on the host.
+
+The owner can still put a file of their own on the host, as root, mode 0644:
+`/etc/blueprint/website-withdrawal-deletion-approval.json` (example:
+`deploy/website-withdrawal-deletion/standing-approval.example.json`). Whenever
+that file exists it is read instead of the release's, valid or not. Use it to
+change the cool-off without a deploy, or to stop deletion at once (below).
+`door status` shows which one is in force:
+`website_withdrawal_deletion.approval_source` is `release` or `host_file`.
+
+To change the recorded approval, change the committed file in a pull request
+and deploy. It is the owner's decision: do not change it without the owner's
+word, and record the date and the decision in its `note`.
 
 | Field | Rule |
 |---|---|
@@ -894,8 +910,9 @@ step installs it, and as shipped it does not validate.
 | `cool_off_hours` | A whole number from 0 to 720 |
 | `note` | Optional, at most 1,000 characters |
 
-Any other field, a link, a file not owned by root, or a file that group or
-others can write makes the approval invalid.
+Any other field or a link makes an approval invalid. So does a host file not
+owned by root, or one that group or others can write. The release's file is
+not held to owner and mode: it sits in the tree the code runs from.
 
 The approval covers a plan only in its policy class:
 
@@ -910,10 +927,16 @@ The approval covers a plan only in its policy class:
 The apply re-plans and keeps every refusal of the tool. Money records, ledgers,
 the audit journal and other sites' data are never deleted. The sealed receipt
 records `authorization`: `kind: standing_owner_approval`, the approval's
-`approval_digest` (sha256 of the file's bytes), who approved, the policy class
-and the checks.
+`approval_digest` (sha256 of the file's bytes), where it was read
+(`approval_source`, `approval_path`), who approved, the policy class and the
+checks.
 
-To withdraw the approval, delete the file. Passes then only plan again.
+To withdraw the approval:
+
+- At once, on the host: install a host file whose `expires_at` is in the past.
+  Passes then only plan, and `website_withdrawal_approval_invalid` posts.
+  Deleting the host file later puts the release's approval back in force.
+- For good: remove the committed file in a pull request and deploy.
 
 ### What a pass records
 
@@ -958,7 +981,8 @@ posting code. A new alert posts at once. The same alerts post again after
 | `website_withdrawal_deletion_overdue` | A withdrawal is 21 days old without a receipt and has no legal hold, whatever it waits on (the approval too). The promise is 30 days. | Find what it waits on in `door status` |
 | `website_withdrawal_scan_incomplete` | A site root could not be listed. | Read the journal |
 
-An absent approval file is not an alert by itself.
+An absent approval is not an alert by itself. With the release's file it is
+absent only on a release from before 2026-11-26.
 
 ### By hand
 
@@ -1161,7 +1185,7 @@ A drill on a fresh synthetic job on the host:
    `door cat <site>/website_withdrawal/automatic_deletion_state.json` and
    `automatic_deletion_plan.json` beside it. Record its `unresolved`, `runs`,
    `objects` and `uncovered_pipeline_roots` in tracker row G-02.
-6. Only with the owner's standing approval installed does a pass apply it.
+6. A pass applies it once the standing approval's cool-off has passed.
    Then read the receipt with `door cat`, and record its `authorization`,
    `remaining` and `policy_copy_classes` in G-02.
 
