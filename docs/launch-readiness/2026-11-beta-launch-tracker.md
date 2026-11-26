@@ -277,6 +277,13 @@ Intended design: every upload is written to one record before it is sent, and st
   - `door status` `website_withdrawal_deletion.approval_status` reads `absent`. Deletion waits for the owner's standing approval at `/etc/blueprint/website-withdrawal-deletion-approval.json`, which the owner installs by hand as root.
 - **Next window:** `7214711` (#3760) ships with the next window deploy. A source-geometry view with no valid depth is left out and named, which unsticks the `austin-apartment-floors` test job.
 
+## The owner's approval for withdrawal deletion ships with the release (2026-11-26)
+
+- **Owner decision, 2026-11-26 about 20:15Z:** "i approve - lets fix this for now and future", on a readiness check's finding that the one withdrawal on the host had deleted nothing and that the approval file was absent.
+- **What changed:** the approval is a committed file, `config/website_withdrawal_deletion_standing_approval.v1.json` (cool-off 72 hours, no expiry, no `garbage_collection_policy_class`). The hourly pass reads it when the host has no file of its own at `/etc/blueprint/website-withdrawal-deletion-approval.json`; a file there is read instead whenever it exists, so an expired one still stops deletion at once. Nobody installs anything by hand, and a rebuilt host has the approval. Runbook: `docs/runbooks/beta-operations.md` section 8.
+- **The withdrawal (`site-capture-ceba4511…`):** acknowledged 2026-11-25 02:25Z, so its cool-off ends 2026-11-28 02:25Z. Its next plan is 2026-11-27 16:21Z (the 24-hour backoff from the old release). The first pass after both applies it. Not yet proven: no apply has run on the host.
+- **Still open for a complete deletion:** `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` is not known to be set on the host. Without it the source bucket prefix stays and the receipt names it under `remaining`. Read the first receipt before changing that.
+
 ## Metering and retry rollout on 2026-11-20
 
 - **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.

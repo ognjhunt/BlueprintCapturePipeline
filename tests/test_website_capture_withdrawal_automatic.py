@@ -231,11 +231,113 @@ def test_the_shipped_example_approval_does_not_validate_until_the_owner_fills_it
     filled = {**example, "approved_by": "Owner Name", "approved_at": _iso(now - 60), "expires_at": None}
     path.write_text(json.dumps(filled))
     assert automatic.load_approval(path, now=now, owner_uid=os.getuid())["status"] == "valid"
-    # The deploy installs nothing from that directory.
+    # The deploy installs nothing from that directory, and nothing at the host's own path: the owner's
+    # approval reaches a host with the release's config (below), and the host path is the owner's override.
     deploy_tool = (ROOT / "scripts/deploy_control_plane_commit.py").read_text()
     installer = (ROOT / "scripts/install_live_pipeline_control_plane.sh").read_text()
     assert "website-withdrawal-deletion/" not in deploy_tool and "website-withdrawal-deletion/" not in installer
     assert "website-withdrawal-deletion-approval.json" not in deploy_tool + installer
+
+
+def test_the_release_ships_the_owners_recorded_approval_and_it_validates():
+    path = automatic.RELEASE_APPROVAL_PATH
+    assert path == ROOT / "config" / automatic.RELEASE_APPROVAL_FILENAME
+    recorded = json.loads(path.read_text())
+    # A release is unpacked group-writable and its owner is the deploy's: neither is checked for this file.
+    loaded = automatic.load_approval(path, now=time.time(), owner_uid=None)
+    assert loaded["status"] == "valid", loaded["reason"]
+    assert loaded["approval"]["approved_by"] == "owner" and loaded["approval"]["cool_off_hours"] == 72
+    assert loaded["approval"]["expires_at"] is None
+    # The owner approved deleting a withdrawn site's copies, not the separate clean-up of unreferenced blobs.
+    assert loaded["approval"]["garbage_collection_approved"] is False
+    assert "garbage_collection_policy_class" not in recorded
+    # The repository is public: the record names the decision, never a person's name or address.
+    assert "@" not in path.read_text()
+
+
+def test_the_release_file_is_held_to_every_rule_but_owner_and_mode(tmp_path):
+    path = tmp_path / "release.json"
+    now = time.time()
+    good = {"schema_version": automatic.APPROVAL_SCHEMA, "approved_by": "owner", "approved_at": _iso(now - 60),
+            "policy_class": automatic.POLICY_CLASS, "cool_off_hours": 72}
+    path.write_text(json.dumps(good))
+    path.chmod(0o664)
+    assert automatic.load_approval(path, now=now, owner_uid=os.getuid())["reason"] == "approval_writable_by_others"
+    assert automatic.load_approval(path, now=now, owner_uid=None)["status"] == "valid"
+    for bad, reason in (({**good, "policy_class": "website_withdrawal_deletion.everything.v1"},
+                         "approval_policy_class_mismatch"),
+                        ({**good, "approved_at": _iso(now + 3600)}, "approval_approved_at_in_future"),
+                        ({**good, "surprise": True}, "approval_unknown_field"),
+                        ({**good, "expires_at": _iso(now - 30)}, "approval_expired")):
+        path.write_text(json.dumps(bad))
+        assert automatic.load_approval(path, now=now, owner_uid=None)["reason"] == reason, reason
+    link = tmp_path / "link.json"
+    link.symlink_to(path)
+    assert automatic.load_approval(link, now=now, owner_uid=None)["reason"] == "approval_symlink"
+
+
+def test_the_hosts_own_file_is_read_instead_of_the_releases_whenever_it_exists(tmp_path):
+    now = time.time()
+    release, host = tmp_path / "release.json", tmp_path / "etc/approval.json"
+    base = {"schema_version": automatic.APPROVAL_SCHEMA, "approved_by": "owner", "approved_at": _iso(now - 60),
+            "policy_class": automatic.POLICY_CLASS}
+    release.write_text(json.dumps({**base, "cool_off_hours": 72}))
+
+    def read(release_path=release):
+        return automatic.standing_approval(host, release_path, now=now, owner_uid=os.getuid())
+
+    # No file on the host: the release's approval is in force, and the result says where it was read.
+    loaded = read()
+    assert (loaded["status"], loaded["source"], loaded["path"]) == ("valid", "release", str(release))
+    assert loaded["approval"]["cool_off_hours"] == 72
+    # No release file either (and a caller that names none): absent, as before.
+    assert read(tmp_path / "missing.json")["status"] == "absent"
+    assert read(None) == {**automatic.load_approval(host, now=now, owner_uid=os.getuid()),
+                          "source": "host_file", "path": str(host)}
+    # The owner's own file on the host wins when valid ...
+    host.parent.mkdir()
+    host.write_text(json.dumps({**base, "cool_off_hours": 0}))
+    host.chmod(0o644)
+    loaded = read()
+    assert (loaded["status"], loaded["source"], loaded["approval"]["cool_off_hours"]) == ("valid", "host_file", 0)
+    # ... and when it is not: an expired or broken file there stops deletion; the release's is not read.
+    host.write_text(json.dumps({**base, "cool_off_hours": 0, "expires_at": _iso(now - 30)}))
+    assert (read()["status"], read()["source"]) == ("expired", "host_file")
+    host.write_text("{")
+    assert (read()["status"], read()["source"]) == ("invalid", "host_file")
+
+
+def test_a_pass_applies_under_the_releases_approval_and_the_receipt_says_where_it_was_read(harness, tmp_path):
+    release = tmp_path / "release/config/approval.json"
+    release.parent.mkdir(parents=True)
+    release.write_text(json.dumps({
+        "schema_version": automatic.APPROVAL_SCHEMA, "approved_by": "owner", "approved_at": _iso(harness.now - HOUR),
+        "policy_class": automatic.POLICY_CLASS, "cool_off_hours": 0}))
+    release.chmod(0o664)
+    summary = harness.run(release_approval_path=release)
+    state = harness.state()
+    assert state["status"] == "applied", state.get("last_error")
+    assert summary["approval"]["status"] == "valid" and summary["approval"]["source"] == "release"
+    receipt = json.loads((harness.site() / "website_withdrawal/deletion_receipts"
+                          / f"{state['plan_digest'][7:]}.json").read_text())
+    authorization = receipt["authorization"]
+    assert authorization["approval_source"] == "release" and authorization["approval_path"] == str(release)
+    assert authorization["approval_digest"] == summary["approval"]["digest"]
+    assert receipt["covered_copies_deleted"] is True and harness.site_files() == 0
+    assert automatic.capacity_projection(summary)["approval_source"] == "release"
+
+
+def test_an_expired_file_on_the_host_stops_deletion_although_the_release_approves(harness, tmp_path):
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({
+        "schema_version": automatic.APPROVAL_SCHEMA, "approved_by": "owner", "approved_at": _iso(harness.now - HOUR),
+        "policy_class": automatic.POLICY_CLASS, "cool_off_hours": 0}))
+    harness.approve(expires_at=_iso(harness.now - 60))
+    files = harness.site_files()
+    summary = harness.run(release_approval_path=release)
+    assert harness.applies == [] and harness.site_files() == files
+    assert harness.state()["waiting_on"] == ["standing_approval_expired"]
+    assert summary["approval"]["source"] == "host_file"
 
 
 def test_a_legal_hold_refuses_even_with_a_valid_approval(harness):
@@ -455,8 +557,9 @@ def test_capacity_summary_carries_the_counts_for_door_status(harness, tmp_path, 
     section = summary["website_withdrawal_deletion"]
     assert section == report["website_withdrawal_deletion"]
     assert section["withdrawals"]["awaiting_owner_approval"] == 1 and section["approval_status"] == "absent"
-    assert set(section) == {"status", "observed_at_epoch", "approval_status", "host_quiet", "scan_complete",
-                            "unreferenced_content_blobs",
+    assert section["approval_source"] == "host_file"
+    assert set(section) == {"status", "observed_at_epoch", "approval_status", "approval_source", "host_quiet",
+                            "scan_complete", "unreferenced_content_blobs",
                             "withdrawals", "alert_codes"}
 
 

@@ -27,8 +27,10 @@ Each pass, with no operator:
    failed, and the next pass plans it again from what was kept. Before this, the first plan on
    the host read about 9 GiB of run records and was killed at the unit's 45-minute start timeout
    on every try (2026-11-25).
-4. It applies only under the owner's standing approval (``APPROVAL_PATH``, validated strictly
-   by ``load_approval``), and only a plan in the approved policy class: an acknowledged
+4. It applies only under the owner's standing approval, and only a plan in the approved policy
+   class. The approval is the release's committed file (``RELEASE_APPROVAL_PATH``), or a file the
+   owner put on the host at ``APPROVAL_PATH``, which is read instead whenever it exists
+   (``standing_approval``; each validated strictly by ``load_approval``). The class: an acknowledged
    withdrawal, no legal hold, nothing unresolved, the site's money settled (no screening
    attempt deferred or unsettled, no rigid probe job waiting on its money) and the approval's
    cool-off elapsed since the acknowledgement. The apply is the deletion tool's own
@@ -71,8 +73,13 @@ from .core.common import write_json
 from .site_roots import is_bucket
 
 UNIT = "blueprint-website-withdrawal-deletion.service"
-# The owner installs this file once, by hand; no deploy step writes it (deploy/website-withdrawal-deletion/).
+# The owner's standing approval ships with the release as a reviewed, committed file
+# (RELEASE_APPROVAL_PATH; owner decision 2026-11-26, recorded like the month's spend limit), so a deploy
+# installs it and a rebuilt host has it. A file the owner puts at APPROVAL_PATH on the host is read
+# instead whenever one exists, valid or not: an expired one there stops deletion at once, with no deploy.
 APPROVAL_PATH = Path("/etc/blueprint/website-withdrawal-deletion-approval.json")
+RELEASE_APPROVAL_FILENAME = "website_withdrawal_deletion_standing_approval.v1.json"
+RELEASE_APPROVAL_PATH = Path(__file__).resolve().parents[2] / "config" / RELEASE_APPROVAL_FILENAME
 APPROVAL_SCHEMA = "website_withdrawal_deletion_standing_approval.v1"
 POLICY_CLASS = "website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1"
 _APPROVAL_REQUIRED = frozenset({"schema_version", "approved_by", "approved_at", "policy_class", "cool_off_hours"})
@@ -133,13 +140,17 @@ def _invalid(reason: str, digest: str | None = None) -> dict[str, Any]:
     return {"status": "invalid", "reason": reason, "digest": digest, "approval": None}
 
 
-def load_approval(path: Path = APPROVAL_PATH, *, now: float, owner_uid: int = 0) -> dict[str, Any]:
+def load_approval(path: Path = APPROVAL_PATH, *, now: float, owner_uid: int | None = 0) -> dict[str, Any]:
     """The standing approval at ``path``: ``absent``, ``invalid`` (with a reason), ``expired`` or ``valid``.
 
     Strict: a regular file (never a link) owned by ``owner_uid`` (root on the host) that no group
     or other user may write, at most 16 KiB of one JSON object with exactly the known fields, the
     current schema, the exact policy class, an approval time with a zone that is not in the
     future, an optional expiry after it, and a whole number of cool-off hours from 0 to 720.
+
+    ``owner_uid=None`` is for the release's own committed file: it sits in the tree this code runs
+    from, so its owner and mode say nothing the code's own do not (a release is unpacked group-writable).
+    Every other rule still holds.
     """
 
     try:
@@ -152,9 +163,9 @@ def load_approval(path: Path = APPROVAL_PATH, *, now: float, owner_uid: int = 0)
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             return _invalid("approval_not_a_regular_file")
-        if info.st_uid != owner_uid:
+        if owner_uid is not None and info.st_uid != owner_uid:
             return _invalid("approval_owner_unexpected")
-        if info.st_mode & 0o022:
+        if owner_uid is not None and info.st_mode & 0o022:
             return _invalid("approval_writable_by_others")
         raw = stream.read(MAX_APPROVAL_BYTES + 1)
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -206,6 +217,21 @@ def load_approval(path: Path = APPROVAL_PATH, *, now: float, owner_uid: int = 0)
     if expires_at is not None and now >= expires_at.timestamp():
         return {"status": "expired", "reason": "approval_expired", "digest": digest, "approval": approval}
     return {"status": "valid", "reason": None, "digest": digest, "approval": approval}
+
+
+def standing_approval(path: Path = APPROVAL_PATH, release_path: Path | None = None, *, now: float,
+                      owner_uid: int = 0) -> dict[str, Any]:
+    """The approval in force, with where it was read (``source``, ``path``).
+
+    The host's own file whenever one exists, valid or not, so the owner can replace the approval there or
+    stop deletion at once with an expired one. Otherwise the release's committed file (``release_path``),
+    and ``absent`` when there is none.
+    """
+
+    host = load_approval(path, now=now, owner_uid=owner_uid)
+    if host["status"] != "absent" or release_path is None:
+        return {**host, "source": "host_file", "path": str(path)}
+    return {**load_approval(release_path, now=now, owner_uid=None), "source": "release", "path": str(release_path)}
 
 
 def paid_stage_reasons(*, provider_lock_dir: Path = DEFAULT_PROVIDER_LOCK_DIR,
@@ -465,7 +491,7 @@ def _money(plan: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         "screening_incomplete": screening_open, "rigid_probe_jobs_waiting": len(probes)}
 
 
-def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], approval_path: Path, now: float,
+def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], now: float,
             resolution: Callable[[], Mapping[str, Any]], quiet: Callable[[], list[str]],
             planner: Callable[..., dict[str, Any]], applier: Callable[..., dict[str, Any]],
             scan_deadline: float | None = None) -> dict[str, Any]:
@@ -530,7 +556,8 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], approval_pat
                 state.update(status="applying", waiting_on=[], approval_digest=approval["digest"])
                 _write_state(site, state)
                 authorization = {
-                    "kind": "standing_owner_approval", "approval_path": str(approval_path),
+                    "kind": "standing_owner_approval", "approval_path": approval["path"],
+                    "approval_source": approval["source"],
                     "approval_digest": approval["digest"], **approval["approval"],
                     "class_checks": {"pipeline_acknowledged": inspected["pipeline_acknowledged"] is True,
                                      "acknowledged_at_epoch": row["acknowledged_at_epoch"],
@@ -670,6 +697,7 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
                       "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
     return {"schema_version": SUMMARY_SCHEMA, "observed_at_epoch": now,
             "approval": {"status": approval["status"], "reason": approval["reason"], "digest": approval["digest"],
+                         "source": approval["source"],
                          "expires_at": (approval["approval"] or {}).get("expires_at"),
                          "cool_off_hours": (approval["approval"] or {}).get("cool_off_hours")},
             "host": {"quiet": not busy, "reasons": list(busy)}, "scan_complete": not problems,
@@ -695,6 +723,7 @@ def _host_lock(report_root: Path) -> Iterator[bool]:
 
 def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Callable[[], Mapping[str, Any]],
              quiet: Callable[[], list[str]], approval_path: Path = APPROVAL_PATH, approval_owner_uid: int = 0,
+             release_approval_path: Path | None = None,
              now: float | None = None, webhook_url: str = "",
              poster: Callable[[str, Mapping[str, Any]], None] | None = None,
              planner: Callable[..., dict[str, Any]] | None = None,
@@ -704,6 +733,9 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
              plan_reading_seconds: float | None = PLAN_READING_SECONDS) -> dict[str, Any]:
     """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted.
 
+    ``release_approval_path`` is the release's committed approval, read only when ``approval_path`` holds no
+    file (``standing_approval``); None (the default, and every test that does not name one) reads the host
+    path alone.
     ``backup_ledger`` is the state backup's ledger (default: ``control_plane_state_backup`` under its report
     root); a site is finished only once no backup generation older than its deletion survives.
     ``plan_reading_seconds`` is how far into the pass the plan may start reading another run's records
@@ -726,7 +758,8 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
     with _host_lock(report_root) as held:
         if not held:
             return {"schema_version": SUMMARY_SCHEMA, "observed_at_epoch": observed, "skipped": "another_pass_running"}
-        approval = load_approval(approval_path, now=observed, owner_uid=approval_owner_uid)
+        approval = standing_approval(Path(approval_path), release_approval_path, now=observed,
+                                     owner_uid=approval_owner_uid)
         sites, problems = discover_withdrawals(site_roots)
         rows = []
         for site in sites:
@@ -748,7 +781,7 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
                      key=lambda row: (float((row["state"] or {}).get("last_attempt_at_epoch") or -1), str(row["site"])))
         if due and not busy:
             row = due[0]
-            state = _handle(row, approval=approval, approval_path=Path(approval_path), now=observed,
+            state = _handle(row, approval=approval, now=observed,
                             resolution=resolution, quiet=quiet, planner=planner, applier=applier,
                             scan_deadline=None if plan_reading_seconds is None else started + plan_reading_seconds)
             row.update(state=state, receipt=_receipt_view(row["site"], row["tombstone_digest"], backup_ledger))
@@ -813,10 +846,13 @@ def capacity_projection(summary: Mapping[str, Any] | None) -> dict[str, Any] | N
     host = summary.get("host") if isinstance(summary.get("host"), Mapping) else {}
     observed = summary.get("observed_at_epoch")
     status = approval.get("status")
+    source = approval.get("source")
     return {
         "status": "observed",
         "observed_at_epoch": observed if isinstance(observed, (int, float)) and not isinstance(observed, bool) else None,
         "approval_status": status if status in {"absent", "invalid", "expired", "valid"} else "unknown",
+        # Where the approval was read: the release's committed file, or the owner's own file on the host.
+        "approval_source": source if source in {"host_file", "release"} else None,
         "host_quiet": host.get("quiet") if isinstance(host.get("quiet"), bool) else None,
         "scan_complete": summary.get("scan_complete") if isinstance(summary.get("scan_complete"), bool) else None,
         "withdrawals": {key: counts[key] for key in _PROJECTED_COUNTS
@@ -863,7 +899,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .website_capture_withdrawal_deletion import UNCOVERED_ROOTS
 
     summary = run_pass(site_roots=roots, report_root=args.report_root, resolution=_production_resolution,
-                       quiet=paid_stage_reasons, webhook_url=str(os.getenv(WEBHOOK_URL_ENV) or "").strip(),
+                       quiet=paid_stage_reasons, release_approval_path=RELEASE_APPROVAL_PATH,
+                       webhook_url=str(os.getenv(WEBHOOK_URL_ENV) or "").strip(),
                        site_index_root=args.report_root / SITE_INDEX_DIRNAME, indexed_roots=UNCOVERED_ROOTS)
     print(json.dumps({key: summary.get(key) for key in ("approval", "host", "withdrawals", "action", "alerts",
                                                         "skipped") if key in summary}, sort_keys=True))
@@ -874,6 +911,7 @@ __all__ = [
     "APPROVAL_PATH",
     "APPROVAL_SCHEMA",
     "POLICY_CLASS",
+    "RELEASE_APPROVAL_PATH",
     "STATE_SCHEMA",
     "SUMMARY_SCHEMA",
     "capacity_projection",
@@ -882,6 +920,7 @@ __all__ = [
     "main",
     "paid_stage_reasons",
     "run_pass",
+    "standing_approval",
 ]
 
 
