@@ -257,9 +257,16 @@ def _stage_result_status(value: Any) -> str | None:
     return None
 
 
+def _snapshot_value(value: Any) -> Any:
+    """A stage result's non-JSON value as the snapshot keeps it: compact track runs as the list of runs they
+    equal (a family preparation's source tracks), anything else as its text."""
+    from .website_track_mask_codec import RunLengths
+    return value.to_list() if isinstance(value, RunLengths) else str(value)
+
+
 def _json_safe_stage_result_snapshot(value: Any) -> Any | None:
     try:
-        encoded = json.dumps(value, default=str, sort_keys=True)
+        encoded = json.dumps(value, default=_snapshot_value, sort_keys=True)
     except (TypeError, ValueError):
         return None
     if len(encoded.encode("utf-8")) > RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES:

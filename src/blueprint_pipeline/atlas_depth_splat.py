@@ -176,8 +176,12 @@ def read_exr_depth(path: Path) -> np.ndarray:
     return np.concatenate(rows).astype(np.float32)
 
 
-def write_exr_depth(path: Path, depth: np.ndarray) -> Path:
-    """Top-left planar FLOAT scanlines; no codec or row-order reinterpretation."""
+def write_exr_depth(path: Path, depth: np.ndarray, *, replace: bool = False) -> Path:
+    """Top-left planar FLOAT scanlines; no codec or row-order reinterpretation.
+
+    A file already at ``path`` with other bytes refuses, as one a provider may hold; with ``replace``
+    (its caller knows nothing was sent from it) it is written again.
+    """
     pixels = np.ascontiguousarray(depth, dtype='<f4')
     if pixels.ndim != 2 or not all(pixels.shape):
         raise ValueError('atlas_depth_exr_grid_invalid')
@@ -199,7 +203,7 @@ def write_exr_depth(path: Path, depth: np.ndarray) -> Path:
     data = header + struct.pack(f'<{height}Q', *offsets) + b''.join(
         struct.pack('<ii', y, width * 4) + pixels[y].tobytes() for y in range(height))
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or (path.exists() and path.read_bytes() != data):
+    if path.is_symlink() or (not replace and path.exists() and path.read_bytes() != data):
         raise ValueError('atlas_depth_exr_output_changed')
     path.write_bytes(data)
     return path

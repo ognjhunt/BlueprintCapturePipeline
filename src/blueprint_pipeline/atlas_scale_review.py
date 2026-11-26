@@ -6,6 +6,7 @@ the earlier assumption and every provider output remain unchanged.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .common import write_json
@@ -49,12 +50,23 @@ def revised_plan(*, automation: dict, proposal: dict, frame_ids: set[str], refer
             "scale_review": {"proposal_digest": canonical_digest(retained), "summary": value["summary"]}}
 
 
+#: What a retained operation-coverage request is for: the parent reading it clarifies and the video it was read
+#: from. Its other fields (its schema's name, the bound context digest's rule, what is copied beside them) are what
+#: the release that wrote it computed for the same reading.
+_COVERAGE_REQUEST_IDENTITY = ("scope", "parent_semantics_digest", "source_video_digest")
+
+
 def _operation_coverage_feedback(root: Path, *, request: dict | None, needed: bool) -> dict:
     """Augment only a fresh scale call; preserve its exact input on every resume.
 
     Any retained legacy planner record, including an uncertain submission,
     keeps the original scale request. A separate semantic clarification may
     later resolve routing without buying that scale review again.
+
+    A retained request is what the scale call was sent, or will be sent on resume: it is used as
+    written whenever it clarifies the same reading of the same video as today's (or today's code asks
+    for none), so a release that builds the request differently never refuses a job already past it
+    (2026-11-24 sweep: every retry refused and the room never built). One for another reading refuses.
     """
     from .decision_evidence_contracts import canonical_json
     from .launch_immutable_input_writer import write_exclusive_private_bytes
@@ -63,17 +75,26 @@ def _operation_coverage_feedback(root: Path, *, request: dict | None, needed: bo
     retained = path.exists() or path.is_symlink()
     if not retained and (request is None or not needed or any((root / "planner").glob("*.json"))):
         return {}
+    if retained:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 65_536:
+            raise ValueError("atlas_scale_operation_coverage_request_changed")
+        written = path.read_bytes()
+        if isinstance(request, dict) and (canonical_json(request) + "\n").encode() == written:
+            return {"operation_coverage_request": request}
+        try:
+            kept = json.loads(written)
+        except ValueError:
+            kept = None
+        if (not isinstance(kept, dict) or (isinstance(request, dict) and any(
+                kept.get(key) != request.get(key) for key in _COVERAGE_REQUEST_IDENTITY))):
+            raise ValueError("atlas_scale_operation_coverage_request_changed")
+        return {"operation_coverage_request": kept}
     if not isinstance(request, dict):
         raise ValueError("atlas_scale_operation_coverage_request_changed")
     payload = (canonical_json(request) + "\n").encode()
     if len(payload) > 65_536:
         raise ValueError("atlas_scale_operation_coverage_request_too_large")
-    if retained:
-        if (path.is_symlink() or not path.is_file() or path.stat().st_size > 65_536
-                or path.read_bytes() != payload):
-            raise ValueError("atlas_scale_operation_coverage_request_changed")
-    else:
-        write_exclusive_private_bytes(path, payload)
+    write_exclusive_private_bytes(path, payload)
     return {"operation_coverage_request": request}
 
 

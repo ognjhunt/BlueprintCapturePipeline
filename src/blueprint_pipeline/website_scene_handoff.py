@@ -888,8 +888,10 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 and floor_ships(result["blockers"], task_context=metadata.get("site_task_context") or {},
                                 error=failure)):
             room_floor([str(code) for code in result["blockers"]])
-        result["digest"] = canonical_digest(result, digest_field="digest")
-        write_json(handoff_path, result)
+        # A family route's inputs carry its targets' source tracks compact: the codec gives the plain lists' bytes.
+        from .website_track_mask_codec import canonical_track_digest
+        result["digest"] = canonical_track_digest(result, digest_field="digest")
+        write_track_json(handoff_path, result)
         return result
 
     def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:

@@ -206,3 +206,47 @@ def test_a_coarse_mesh_in_no_declared_frame_still_fails_and_says_why(tmp_path):
     assert set(failure["frame_support"]) == set(registration.GLB_FRAMES)
     assert failure["mesh_faces"] > 0 and failure["splat_points"] == len(points)
     assert not (tmp_path / "registered" / "atlas_mesh_registration.json").exists()
+
+
+def _glb_colours(path):
+    """The RGBA8 vertex colours (accessor 1) of a GLB ``write_glb_triangles`` wrote."""
+    import struct
+    data = path.read_bytes()
+    json_length = struct.unpack_from("<I", data, 12)[0]
+    gltf = json.loads(data[20:20 + json_length])
+    view = gltf["bufferViews"][gltf["accessors"][1]["bufferView"]]
+    start = 28 + json_length + view["byteOffset"]
+    return np.frombuffer(data[start:start + view["byteLength"]], np.uint8).reshape(-1, 4)
+
+
+def test_every_registered_face_kept_ships_flagged_with_unobserved_vertices_grey(tmp_path):
+    """A registered mesh none of whose faces is supported keeps every registered face, flagged. Its vertices with no
+    Gaussian nearby have no observed colour: they are neutral grey and counted, where indexing the splat for them
+    raised IndexError and no collider shipped."""
+    from blueprint_pipeline.atlas_scene_estimates import scene_estimates
+    root = splat_root(tmp_path / "splat")
+    near, faces = grid(-2.0)
+    n = int(round(np.sqrt(len(near))))
+    # Each face joins two neighbouring observed vertices to a vertex 1 m off the surface, which no Gaussian is near.
+    left = (np.arange(n)[:, None] * n + np.arange(n - 1)[None, :]).ravel()
+    far = (near[left] + near[left + 1]) / 2 + np.array([0.0, 0.0, 1.0])
+    vertices = np.concatenate([near, far])
+    faces = np.stack([left, left + 1, len(near) + np.arange(len(left))], axis=1)
+    glb = registration.write_glb_triangles(tmp_path / "mesh.glb", vertices, faces,
+                                           np.full((len(vertices), 3), 128, np.uint8))
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    assert record["glb_frame"] == "atlas_world" and "registration_estimate" not in record
+    estimate = record["support_estimate"]
+    assert estimate["code"] == registration.COLLIDER_ESTIMATE_FLAG and estimate["basis"] == "every_registered_face"
+    assert estimate["vertices_without_nearby_gaussian"] == len(far)
+    assert estimate["unobserved_vertex_colour"] == "neutral_grey_zero_base_colour"
+    assert record["faces_kept"] == record["faces_in"] == len(faces)
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+    colours = _glb_colours(tmp_path / "registered" / "atlas_mesh_supported.glb")
+    shipped, _ = registration.read_glb_triangles(tmp_path / "registered" / "atlas_mesh_supported.glb")
+    off = np.isclose(shipped[:, 2], -1.0)
+    assert off.sum() == len(far) and (colours[off, :3] == 128).all()
+    observed = np.clip((0.5 + 0.28209479177387814 * np.array([1.0, -0.5, 0.0])) * 255, 0, 255).round()
+    assert (colours[~off, :3] == observed).all()
+    assert scene_estimates(levelling={}, registration=record) == [
+        {"code": registration.COLLIDER_ESTIMATE_FLAG, "source": "mesh_registration", "evidence": estimate}]

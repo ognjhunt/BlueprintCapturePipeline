@@ -562,16 +562,25 @@ def test_continuous_video_over_bound_at_every_rung_fails_closed(tmp_path, monkey
     assert not (root / "continuous-video.json").exists()
 
 
-def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("change", ["substituted", "older_parser", "unreadable"])
+def test_a_decoded_mask_cache_not_bound_to_the_kept_answer_is_parsed_again_from_it(tmp_path, monkeypatch, change):
+    """A cache another parser revision wrote, or one changed since, is never read and never refuses: the kept
+    paid answer is parsed again, buying nothing (a parser revision bump refused every retained parse)."""
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture")
     args = inputs(tmp_path)
-    sam.run_meta_sam31(**args, opener=lambda *a, **kw: BytesIO(json.dumps(response()).encode()))
+    first = sam.run_meta_sam31(**args, opener=lambda *a, **kw: BytesIO(json.dumps(response()).encode()))
     cache_path = next(args["output_root"].rglob("parsed-response-0.json"))
-    cache = json.loads(cache_path.read_text())
-    cache["tracks"][0]["label"] = "substituted"
-    cache_path.write_text(json.dumps(cache))
-    with pytest.raises(ValueError, match="retained_tracks_changed"):
-        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("must not purchase a retry"))
+    written = cache_path.read_bytes()
+    cache = json.loads(written)
+    if change == "substituted":
+        cache["tracks"][0]["label"] = "substituted"
+    elif change == "older_parser":
+        cache["binding"]["parser_revision"] = 0
+        cache["digest"] = canonical_digest(cache, digest_field="digest")
+    cache_path.write_text(json.dumps(cache) if change != "unreadable" else "{not json")
+    again = sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("must not purchase a retry"))
+    assert again["tracks"] == first["tracks"]
+    assert cache_path.read_bytes() == written
 
 
 @pytest.mark.parametrize("refusal", [404, 429, 503])

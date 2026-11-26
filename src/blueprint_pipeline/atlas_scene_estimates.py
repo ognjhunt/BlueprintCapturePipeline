@@ -146,7 +146,7 @@ def scene_estimates(*, levelling: Mapping[str, Any], registration: Mapping[str, 
               if isinstance(levelling.get(key), Mapping)}
     if floors:
         rows.append({"code": FLOOR, "source": "levelling", "evidence": floors})
-    for key in ("registration_estimate", "support_estimate"):
+    for key in ("registration_estimate", "support_estimate", "depth_filter_estimate"):
         if isinstance(registration.get(key), Mapping):
             rows.append({"code": COLLIDER, "source": "mesh_registration", "evidence": dict(registration[key])})
     estimated = _mapping(review).get("estimated_aspects")

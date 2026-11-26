@@ -198,6 +198,31 @@ def test_changed_scale_clarification_sidecar_stops_before_a_model_call(tmp_path,
             operation_coverage_request=_coverage_request(), operation_coverage_needed=True)
 
 
+@pytest.mark.parametrize("today", ["reworded", "none"])
+def test_a_retained_clarification_for_the_same_reading_is_sent_as_written(tmp_path, monkeypatch, today):
+    """A release that builds the request differently for the same reading (its bound context digest, its schema's
+    name, a field it copies), or builds none, resumes the scale call with what was retained: it was sent."""
+    options = _automatic_options(tmp_path, monkeypatch)
+    root = tmp_path / "scale_review"
+    root.mkdir()
+    written = {**_coverage_request(), "schema_version": "website_operation_coverage_request.v1"}
+    sidecar = root / "operation-coverage-request.json"
+    from blueprint_pipeline.decision_evidence_contracts import canonical_json
+    sidecar.write_bytes((canonical_json(written) + "\n").encode())
+    before = sidecar.read_bytes()
+    sent = []
+
+    def planner(**kw):
+        sent.append(kw["scaling"]["operation_coverage_request"])
+        return {"proposal": proposal(plan()), "reference_sources": []}
+    current = ({**written, "schema_version": "website_operation_coverage_request.v2",
+                "task_context_digest": "sha256:" + "d" * 64, "original_semantics": {"steps": []}}
+               if today == "reworded" else None)
+    repair.repair_source_scale(**options, planner_runner=planner, operation_coverage_request=current,
+                               operation_coverage_needed=today == "reworded")
+    assert sent == [written] and sidecar.read_bytes() == before
+
+
 def test_scale_abstention_still_retains_independent_operation_coverage(tmp_path, monkeypatch):
     options = _automatic_options(tmp_path, monkeypatch)
     receipt = {"proposal": {"status": "abstained", "scale_references": [], "summary": "No defensible reference",

@@ -204,6 +204,31 @@ def test_cpu_preparation_exports_only_candidate_views(geometry_case):
     assert geometry.prepare_website_geometry_inputs(**kwargs) == inputs
 
 
+@pytest.mark.parametrize("binding", [{"adapter_version": 3}, {"maximum_frames": 24}, "legacy"])
+def test_a_decode_of_this_video_an_earlier_release_kept_is_read_as_written(geometry_case, monkeypatch, binding):
+    """A version bump, another frame count or the legacy binding never refuses or decodes the same video again."""
+    kwargs, _ = geometry_case
+    inputs = geometry.prepare_website_geometry_inputs(**kwargs)
+    path = kwargs["output_root"] / "worker_inputs/geometry_inputs.json"
+    kept = json.loads(path.read_text())
+    kept["binding"] = ({"source_video_digest": kept["binding"]["source_video_digest"],
+                        "model_id": geometry.LEGACY_MODEL_ID, "model_code_revision": geometry.LEGACY_MODEL_CODE_REVISION,
+                        "adapter_version": 1} if binding == "legacy" else {**kept["binding"], **binding})
+    kept["digest"] = geometry.canonical_digest(kept, digest_field="digest")
+    path.write_text(json.dumps(kept))
+    monkeypatch.setattr(geometry.LocalDecodedObservationAdapter, "execute", lambda *a, **k: pytest.fail("decoded"))
+    again = geometry.prepare_website_geometry_inputs(**kwargs, maximum_frames=16)
+    assert again == kept and again["frames"] == inputs["frames"]
+
+
+def test_a_decode_of_another_video_still_refuses(geometry_case):
+    kwargs, _ = geometry_case
+    geometry.prepare_website_geometry_inputs(**kwargs)
+    kwargs["source_video"].write_bytes(b"another video")
+    with pytest.raises(ValueError, match="website_geometry_input_identity_conflict"):
+        geometry.prepare_website_geometry_inputs(**kwargs)
+
+
 def test_visual_source_frames_do_not_invent_geometry(geometry_case):
     kwargs, calls = geometry_case
     frames = geometry.prepare_website_source_frames(**kwargs)

@@ -17,6 +17,7 @@ from .common import write_json
 from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .atlas_scene_preservation import follows_today_until_sent, rewritable
 
 
 def oriented_camera(frame):
@@ -232,6 +233,7 @@ def prepare_depth_context(*, frames, selected, root):
     return rows
 
 
+@follows_today_until_sent
 def generate_chisel_completion(*, frames, selected, candidates, root, pose, context, configuration,
                                task_runner, max_polls, removed_objects=(), checkpoint=None,
                                scene_caption='', view_gap_reasons=None, geometry_frames=None):
@@ -311,7 +313,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
                             'maximum_cost_usd': quote['maximum_cost_usd']} for group, request, _, _, quote in specs]}
     binding['digest'] = canonical_digest(binding, digest_field='digest')
     plan_path = root / 'chisel-completion-plan.json'
-    if plan_path.exists() and json.loads(plan_path.read_text()) != binding:
+    if plan_path.exists() and json.loads(plan_path.read_text()) != binding and not rewritable(plan_path):
         raise ValueError('atlas_completion_chisel_plan_changed')
     write_json(plan_path, binding)
     assets = [plan_path, *[Path(row['image_path']) for row in sources],
