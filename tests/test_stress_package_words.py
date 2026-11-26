@@ -4,6 +4,7 @@ From the $0 stress round of 2026-11-24 (each test reproduced a gap, now closed).
 for: the company builder's own test job (``tests/test_website_company_simulation.Job``).
 """
 # Covers: src/blueprint_pipeline/website_company_simulation.py
+# Covers: src/blueprint_pipeline/website_company_readme.py
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ import pytest
 
 pytest.importorskip("pxr")
 
+from blueprint_pipeline import website_company_readme as company_readme  # noqa: E402
 from blueprint_pipeline import website_company_simulation as sim  # noqa: E402
 from blueprint_pipeline import website_owner_success_assumption as assumption  # noqa: E402
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest  # noqa: E402
@@ -63,7 +65,7 @@ def test_the_readme_explains_every_top_level_field_of_success_rule_json(tmp_path
 
 
 def test_a_room_package_without_a_rule_never_points_at_a_success_rule_json_it_does_not_ship():
-    """``_readme``'s note for a part whose file carries its own root offset says "see part_notes in success_rule.json"
+    """``readme``'s note for a part whose file carries its own root offset says "see part_notes in success_rule.json"
     only when that file ships; ``_build_once`` writes part_notes only into a rule that exists. A room package with
     no rule (nothing found, an unknown kind) ships no success_rule.json, so the note never names it. Latent: today's
     room parts are written with an identity root, so a real job needs a part with its own offset."""
@@ -74,5 +76,5 @@ def test_a_room_package_without_a_rule_never_points_at_a_success_rule_json_it_do
     units = {prim: ("Z", 1.0) for prim in placed}
     offsets = {"Room": {"translation_m": [0.0, 0.0, 1.5], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]}}
     names = ["README.txt", "scene.usda", *placed.values()]  # what ships: no success_rule.json
-    readme = sim._readme(source, placed, names, units, offsets)
+    readme = company_readme.readme(source, placed, names, units, offsets)
     assert "success_rule.json" not in readme, "README points at success_rule.json, which this package does not ship"
