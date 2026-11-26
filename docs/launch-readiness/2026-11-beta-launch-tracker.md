@@ -252,6 +252,31 @@ Intended design: every upload is written to one record before it is sent, and st
   - failed units 1: `blueprint-gpu-spend-guard.service`. Its journal shows the run ending with status 2 after `runpod pod query failed`, at 15:08Z and again at 15:11Z. That is the retired RunPod key, not this release: the guard has been blocked on `runpod_inventory_query_failed` since 11-13, and the owner deletes the key on the host;
   - counted spend $302.04, admission allowed, 0 live instances.
 
+## Deploy on 2026-11-26 outside the D-08 window, for privacy (`e8602a0`)
+
+- **On the owner's word, for privacy:** the owner asked to merge #3759 and #3760 and deploy the withdrawal fix. D-08 allows a privacy fix outside the window. The request names it in its operation key, `privacy:withdrawal-plan-timeout:pr3759`.
+- **Before, 19:40Z and 19:56Z (door status and requests):**
+  - active release `ffa1e34`, `commit_proven` true, no blockers;
+  - no deploy unit, no activation hold, no paid-launch lock held, and the door queue empty;
+  - last deploy at 08:30Z (`20261126T083034Z-deploy-795c6a63`);
+  - November counted spend $350.24 of the $400 limit, admission allowed.
+- **Which commit:** `e8602a0` (#3759), not main's head `7214711` (#3760). #3760 is not a privacy fix, so it ships with the next window deploy. Main CI's "SBOM, license, and provenance contract" job attested `e8602a0` (run 45885314418).
+- **19:56:16Z, `e8602a0`:** request `20261126T195616Z-deploy-50639c37`; deployed by 20:10Z (receipt `iteration_e8602a0655ee_door.json`).
+- **What the release carries since `ffa1e34`:**
+  - #3759: the withdrawal plan keeps what each run's records name, in `run-scan-cache/` under the withdrawal report root, and reads again only the runs that changed. The hourly pass reads for at most 25 minutes and keeps at least one new run; the site is then `scanning`, not failed.
+  - Before it, the only withdrawal ever recorded (`site-capture-ceba4511…`) was killed at the unit's 45-minute start timeout on all four tries: 11-25 at 03:11Z, 05:58Z and 11:55Z, and 11-26 from 14:34Z to 15:19Z. Each plan read at least 9 GiB of run records, mostly the retired early trial's policy canaries.
+- **After, 20:10:56Z:**
+  - active release `e8602a0`, `commit_proven` true, no blockers;
+  - the intake service reports the same commit;
+  - no deploy unit, door queue empty;
+  - receipt: no paused lane disarmed, failed or held;
+  - failed units 1: `blueprint-gpu-spend-guard.service`. That is the retired RunPod key, as since 11-13;
+  - counted spend $350.29, admission allowed.
+- **The withdrawal:**
+  - Its state from the old release is still `failed` (4 failures, `interrupted_while_planning`). Its 24-hour backoff makes the next attempt 2026-11-27 16:21Z, the first on this release. No door request kind brings it forward. It is inside the 30 days the privacy policy promises: the Pipeline acknowledged it on 11-25.
+  - `door status` `website_withdrawal_deletion.approval_status` reads `absent`. Deletion waits for the owner's standing approval at `/etc/blueprint/website-withdrawal-deletion-approval.json`, which the owner installs by hand as root.
+- **Next window:** `7214711` (#3760) ships with the next window deploy. A source-geometry view with no valid depth is left out and named, which unsticks the `austin-apartment-floors` test job.
+
 ## Metering and retry rollout on 2026-11-20
 
 - **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.
