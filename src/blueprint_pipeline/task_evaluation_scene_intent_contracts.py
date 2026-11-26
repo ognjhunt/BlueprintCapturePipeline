@@ -6,6 +6,7 @@ or mutation services. Issuance, reservations and recovery remain in intake.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections.abc import Mapping
@@ -18,6 +19,8 @@ from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 
 from .task_family_scoring import FAMILY_ALIASES
 
+_LOG = logging.getLogger(__name__)
+
 #: A navigation job's website intake (``website_navigation_intake``): the robot walks to a goal in a scene
 #: kept as filmed. It names its navigation record's digests and no subject, support or destination, and it
 #: is preparation only. Owner, 2026-11-07: it reserves $0 and grants no construction allowance, because a
@@ -28,6 +31,25 @@ NAVIGATION_TASK_DIGESTS = ("navigation_task_spec_digest", "compiled_task_spec_di
                            "task_success_contract_digest", "runtime_contract_digest", "scene_revision_digest")
 TASK_STRATEGIES = ("pick_and_place", "articulated_open_close", NAVIGATION_STRATEGY, *FAMILY_ALIASES)
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
+#: What a pick-and-place or articulated task may carry besides its own parts: keys a release reads (whether completed
+#: stages are reused; an evaluation request's robot binding and its digest, episode interpretation and evaluation
+#: source, ``task_evaluation_public_scene_attempt_factory``, ``task_evaluation_controls_terminal_adoption``,
+#: ``task_evaluation_team_run_controller``). Any other key is refused, never ignored.
+TASK_OPTIONAL_FIELDS = ("reuse_completed_stages", "robot_binding_id", "robot_binding_digest", "episode_interpretation",
+                        "evaluation_source")
+#: A several-object job's further objects: built and composed back into the scene besides ``task.subject``, the
+#: top-ranked object the success rule scores. Left out entirely for a one-object job, so its request and digests are
+#: unchanged. The WebApp's rules, mirrored exactly: Blueprint-WebApp ``server/utils/taskEvaluationSceneIntake.ts``
+#: (``ADDITIONAL_OBJECTS_MAX``, ``additionalObjects``, ``sponsoredSceneTask``: pick-and-place only, 1 to 7 rows, each
+#: exactly ``{rank, subject}``, ranks 2 to 8 strictly rising, a non-empty subject) and
+#: ``server/utils/websiteSceneSponsorship.ts`` (``WEBSITE_SUBJECT_ORIGINS`` in ``validateWebsiteSponsoredIntake``:
+#: removed before reconstruction or designed, never a ``test_environment``). A rank left out is an object left in the
+#: scan as filmed.
+ADDITIONAL_OBJECTS_FIELD = "additional_objects"
+ADDITIONAL_OBJECTS_MAX = 7
+ADDITIONAL_OBJECT_RANKS = (2, ADDITIONAL_OBJECTS_MAX + 1)
+ADDITIONAL_OBJECT_ORIGINS = ("removed_before_reconstruction", "synthetic_design")
+ADDITIONAL_OBJECT_FORBIDDEN_SUBJECT_FIELDS = ("test_environment",)
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
 INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
 ATTEMPT_SCHEMA = "task_evaluation_scene_attempt.v1"
@@ -66,6 +88,54 @@ def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
     return result
 
 
+def additional_objects_problem(task: Mapping[str, Any]) -> str | None:
+    """Why a task's further objects (``ADDITIONAL_OBJECTS_FIELD``) are not as the WebApp takes them, as a code, or None
+    when it names none or names them as it does. Never a stop: only privacy, rights and money stop a job (a review of
+    PR #3754), so the scored object's job goes on and further objects named otherwise are flagged and not built
+    (``usable_additional_objects``)."""
+    if ADDITIONAL_OBJECTS_FIELD not in task:
+        return None
+    if task.get("strategy") != "pick_and_place":
+        return "task_additional_objects_strategy_invalid"
+    rows = task[ADDITIONAL_OBJECTS_FIELD]
+    if not (isinstance(rows, list) and 1 <= len(rows) <= ADDITIONAL_OBJECTS_MAX
+            and all(isinstance(row, Mapping) and set(row) == {"rank", "subject"} for row in rows)):
+        return "task_additional_objects_invalid"
+    low, high = ADDITIONAL_OBJECT_RANKS
+    ranks = [row["rank"] for row in rows]
+    if not (all(type(rank) is int and low <= rank <= high for rank in ranks)
+            and all(later > earlier for earlier, later in zip(ranks, ranks[1:]))):
+        return "task_additional_objects_rank_invalid"
+    if not all(isinstance(row["subject"], Mapping) and bool(row["subject"])
+               and row["subject"].get("geometry_origin") in ADDITIONAL_OBJECT_ORIGINS for row in rows):
+        return "task_additional_object_subject_invalid"
+    if any(key in row["subject"] for row in rows for key in ADDITIONAL_OBJECT_FORBIDDEN_SUBJECT_FIELDS):
+        return "task_additional_object_test_environment_forbidden"
+    return None
+
+
+def usable_additional_objects(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The further objects composition may build: the task's own list when it is as the WebApp takes it, else none.
+    Objects not built stay in the scan as filmed; the reason is flagged at intake (``additional_objects_problem``)."""
+    if ADDITIONAL_OBJECTS_FIELD not in task or additional_objects_problem(task) is not None:
+        return []
+    return list(task[ADDITIONAL_OBJECTS_FIELD])
+
+
+def task_fields_not_read(task: Mapping[str, Any]) -> list[str]:
+    """The keys of a pick-and-place or articulated task this release does not read, sorted: kept as sent and flagged
+    (``scene_intake_task_fields_not_read``), never refused. Empty for a family or navigation task, checked exactly."""
+    strategy = task.get("strategy")
+    parts = {"pick_and_place": ("subject", "support", "destination", "success"),
+             "articulated_open_close": ("subject", "support", "articulation", "success")}.get(strategy)
+    if parts is None:
+        return []
+    read = {"task_id", "strategy", *parts, *TASK_OPTIONAL_FIELDS}
+    if strategy == "pick_and_place":
+        read.add(ADDITIONAL_OBJECTS_FIELD)
+    return sorted(str(key) for key in task if key not in read)
+
+
 def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     _require(set(value) == {"schema_version", "submission_id", "owner", "source", "task",
                             "execution", "consent"}, "request_fields_invalid")
@@ -96,6 +166,11 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     _require(isinstance(task, Mapping) and task.get("strategy") in TASK_STRATEGIES
              and _identifier(task.get("task_id")), "task_invalid")
     _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
+    # Before the family and navigation checks, so further objects on either are refused by their own code.
+    problem = additional_objects_problem(task)
+    if problem is not None:
+        _LOG.warning("scene_intake_task_additional_objects_not_used",
+                     extra={"submission_id": value.get("submission_id"), "reason": "scene_intake_" + problem})
     from .task_family_scoring import canonical_task_family
     family = canonical_task_family(task["strategy"])
     if family is not None:
@@ -121,6 +196,13 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
                 else ("subject", "support", "destination", "success"))
     for key in required:
         _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
+    if required:
+        # A key this release does not read is kept and flagged, never a stop (only privacy, rights and money stop a
+        # job; a review of PR #3754). Further objects are not such a key: they are read and checked above.
+        unread = task_fields_not_read(task)
+        if unread:
+            _LOG.warning("scene_intake_task_fields_not_read", extra={"submission_id": value.get("submission_id"),
+                                                                     "fields": unread})
     if task["strategy"] == "articulated_open_close":
         _require(task["articulation"].get("joint_type") in ARTICULATION_JOINT_TYPES
                  and isinstance(task["articulation"].get("part_label"), str)
