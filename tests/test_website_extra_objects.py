@@ -100,6 +100,13 @@ def test_the_plan_ranks_every_object_it_would_build_and_its_first_is_still_the_o
         assert build_plan.built_object(nothing, entries=ENTRIES, editor_objects=EDITOR) is None
 
 
+def test_one_function_ranks_every_built_object_as_the_intake_request_does():
+    from blueprint_pipeline.task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECT_RANKS
+    assert [build_plan.built_rank(position) for position in range(build_plan.MAX_OBJECTS)] == [1, 2, 3, 4, 5, 6, 7, 8]
+    # The scored object is 1; every further object the plan can name fits the contract's ranks.
+    assert (build_plan.built_rank(1), build_plan.built_rank(build_plan.MAX_OBJECTS - 1)) == ADDITIONAL_OBJECT_RANKS
+
+
 def test_the_built_object_still_stops_at_the_first_it_can_build():
     # As before, a row after the one it builds is never read: a malformed later row changes nothing.
     plan = {"objects": [*PLAN["objects"][:1], {"target_id": "carton"}]}
@@ -140,7 +147,8 @@ def test_an_extra_object_is_free_only_with_a_library_model_and_a_shape_or_a_shap
     record = _sources(plan, tmp_path)
     assert record["first_object"] == {"target_id": "tote", "name": "blue tote"}
     (row,) = record["objects"]
-    assert row["rank"] == 1 and row["target_id"] == "carton" and row["plan_sourcing"] == sourcing
+    # Ranked as the intake request ranks it: the scored object is 1, so the first further object is 2.
+    assert row["rank"] == 2 and row["target_id"] == "carton" and row["plan_sourcing"] == sourcing
     assert row["source"] == source and row["free"] is (source != extra.ARTISAN)
     assert row["parametric_shape"] == shape
     assert row["library"] == ({"status": "sealed_and_fetched", "entry_id": "gso:carton", "license": "CC-BY-4.0",
@@ -230,7 +238,7 @@ def test_the_record_is_deterministic_and_reserves_spends_asks_and_fetches_nothin
     assert json.dumps(first, sort_keys=True) == json.dumps(again, sort_keys=True)
     assert first["digest"] == canonical_digest(first, digest_field="digest")
     assert [(row["rank"], row["target_id"], row["source"]) for row in first["objects"]] == [
-        (1, "carton", extra.LIBRARY), (2, "cabinet", extra.ARTISAN)]
+        (2, "carton", extra.LIBRARY), (3, "cabinet", extra.ARTISAN)]
     assert sorted(tmp_path.rglob("*")) == written  # nothing written
     # Each object's pick has its own directory, keyed by its target.
     assert extra.object_root(tmp_path, "carton") != extra.object_root(tmp_path, "cabinet")

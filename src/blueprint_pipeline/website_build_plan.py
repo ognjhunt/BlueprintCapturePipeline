@@ -226,6 +226,14 @@ def built_objects(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[s
     return list(_buildable(plan, entries=entries, editor_objects=editor_objects))
 
 
+def built_rank(position: int) -> int:
+    """The rank of the object at ``position`` (from 0) among ``built_objects``, as the intake request's contract
+    ranks them (``task.subject`` is 1, the scored object; ``task.additional_objects`` 2 to 8,
+    ``task_evaluation_scene_intent_contracts.ADDITIONAL_OBJECT_RANKS``): its position plus one. Every record of a
+    further object (``website_extra_objects``, ``website_further_objects``) numbers it so."""
+    return int(position) + 1
+
+
 def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
                  editor_objects: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """The plan's most important object the job can build today, or None: the first of ``built_objects``, read as
@@ -385,5 +393,5 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
 
 
 __all__ = ["DECISION_SCHEMA", "KEEPS_AS_FILMED", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal",
-           "build_plan_notes", "built_object", "built_objects", "decide_plan", "partial_review", "plan_inputs",
+           "build_plan_notes", "built_object", "built_objects", "built_rank", "decide_plan", "partial_review", "plan_inputs",
            "plan_notes", "sealed_decision", "single_object", "validate_plan"]
