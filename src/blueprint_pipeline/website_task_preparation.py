@@ -1078,13 +1078,16 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       atlas_route: str = "full",
                                       artisan_provider_choice: Any = None, build_choice: Any = None,
                                       rule_withheld: Mapping[str, Any] | None = None,
-                                      success_rule: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                      success_rule: Mapping[str, Any] | None = None,
+                                      further_objects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
     (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
     only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
     is cut out of the collider before any lookup.
 
     ``success_rule``: the numbers of the rule the site's words state (``website_build_choice.success_with_site_numbers``).
+    ``further_objects``: a several-object job's further objects (``website_further_objects.further_inputs``), each
+    composed when free and placeable, else left in the scan as filmed, flagged; never a stop or a hold.
     """
     if atlas_route not in ("full", "geometry_only"):
         raise ValueError("atlas_route_invalid")
@@ -1137,7 +1140,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     up = _UP_INDEX[base_scene["up_axis"]]
     up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
     targets = {row["target_id"]: row for row in task_masks["targets"]}
-    removed = [row for row in removal_manifest["entries"] if row.get("task_effect") == "manipulated"]
+    from . import website_further_objects as further  # a further object composition may take is never held
+    removed = further.scored_entries(removal_manifest["entries"], further_objects)
     synthetic = removal_manifest.get("synthetic_subject")
     if synthetic is not None:
         # A task that adds a new object removes nothing: the object is designed
@@ -1284,7 +1288,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 base_scene, collider = excised["base_scene"], excised["collider"]
                 write_json(output_root / "base_scene.json", base_scene)
         blockers.append(GEOMETRY_ONLY_BLOCKER)
-    support, collider_conditioning, surface_estimate = None, None, {}
+    support, collider_conditioning, surface_estimate, lookup = None, None, {}, None
     if not independent_object:
         if not articulated:  # A destination surface the scan missed (glass) is estimated from its visible edges.
             from .website_unscanned_surface import estimate_unscanned_destination
@@ -1844,6 +1848,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
             agents_api_policy=dict(spend["agents_api_policy"]))
     blockers.extend(admission)  # the Anthropic terms, the Agents API authority, the execution authority, the rights
+    placed_further = further.place(further_objects, entries=removal_manifest["entries"], targets=targets,
+        frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim, residual=residual,
+        collider=None if independent_object or lookup is None else collider, up=up, up_sign=up_sign, mpu=mpu,
+        scored=(subject_min, subject_max), destination=destination, output_root=output_root,
+        strategy="articulated_open_close" if articulated else "pick_and_place", tolerance=DIMENSION_RELATIVE_ERROR,
+        origin=geometry_origin(designed=False, atlas_route=atlas_route))  # each was filmed
     rule_success, success_basis = success_with_site_numbers(articulated=articulated, destination=destination, defaults={
         "rigid": SUCCESS, "opening": ARTICULATED_SUCCESS}, success_rule=success_rule, rule_withheld=rule_withheld)
     request = intake_request(capture_id=capture_id, task_context=task_context, base_scene=base_scene, spend=spend,
@@ -1851,7 +1861,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             origin=geometry_origin(designed=synthetic is not None, atlas_route=atlas_route),
             complete=body is not None or synthetic is not None),
         support_label=subject_entry.get("support_label"), support_aabb=sim_support, mechanism=mechanism,
-        destination=destination, success=rule_success, anthropic=authoring_provider == "anthropic" or artisan_on_anthropic)
+        destination=destination, success=rule_success, anthropic=authoring_provider == "anthropic" or artisan_on_anthropic,
+        further_objects=placed_further["requested"])
     # Scene preparation may build geometry while the owner's target is unknown
     # or untranslated. It selects no policy and cannot claim the target was met.
     # Retain the translation refusal for an evaluation request.
@@ -1866,7 +1877,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             blockers.append(str(exc))
     compose_back = compose_back_record(task_context=task_context, subject_min=subject_min, subject_max=subject_max,
         base_scene=base_scene, meters_per_unit=mpu, snap=snap, registration_path=registration_path)
-    composed = composed_removal_manifest(removal_manifest, {subject_entry["target_id"]: compose_back})
+    further_fields, further_backs = further.compose(request["task"], placed_further, task_context=task_context,
+        base_scene=base_scene, mpu=mpu, registration_path=registration_path, output_root=output_root)
+    composed = composed_removal_manifest(removal_manifest, {subject_entry["target_id"]: compose_back, **further_backs})
     write_json(output_root / "removal_manifest.composed.json", composed)
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
@@ -1918,7 +1931,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
                              "dimension_authority": subject_dimension_authority},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},
-        "intake_request": request, "compose_back": compose_back,
+        "intake_request": request, "compose_back": compose_back, **further_fields,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",
                         "collision_object_excision": "not_required_subject_absent_from_reconstruction",
                         **({"articulated_replacement_authoring": "astra_articulated_replacement",

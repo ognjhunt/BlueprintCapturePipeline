@@ -53,6 +53,9 @@ Codes, each ``scene_estimate:<kind>``:
 - ``destination_box_meets_room``: wherever the object would rest on its destination with its centre and
   half its footprint over the surface, its estimated box, which takes in all of it, reached into other
   geometry of the room; it is placed at the nearest such spot all the same (``website_destination_overhang``).
+- ``further_object_left_in_scan``: a further object of a several-object job was not composed (it needs the
+  paid generated model, or it could not be placed, authored or checked); it stays in the scan as filmed, and
+  its reason is on the preparation's ``further_objects`` record (``website_further_objects``).
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
 existed carry none of their fields and give no code.
@@ -112,6 +115,8 @@ DESTINATION_OVERHANG = "scene_estimate:destination_overhang"
 #: Wherever the object would rest on its destination surface, its estimated box reached into other geometry of the
 #: room (job move-the-lamp-2: the wall behind a glass shelf); it is placed at the nearest such spot, flagged.
 DESTINATION_BOX_MEETS_ROOM = "scene_estimate:destination_box_meets_room"
+#: A further object of the job stays in the scan as filmed (``website_further_objects.LEFT_IN_SCAN``).
+FURTHER_OBJECT_LEFT_IN_SCAN = "scene_estimate:further_object_left_in_scan"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
 ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
@@ -127,7 +132,7 @@ CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, T
                    TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, SURROUNDINGS_PAST_BUDGET,
                    DESTINATION_SURFACE_ESTIMATED,
                    OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG,
-                   DESTINATION_BOX_MEETS_ROOM})
+                   DESTINATION_BOX_MEETS_ROOM, FURTHER_OBJECT_LEFT_IN_SCAN})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -250,6 +255,8 @@ def preparation_record_flags(value: Mapping[str, Any]) -> set[str]:
                                 _mapping(value.get("destination_box_meets_room")).get("flag"))
               if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG,
                           DESTINATION_BOX_MEETS_ROOM)]
+    flags += [code for code in _mapping(value.get("further_objects")).get("flags") or []
+              if code == FURTHER_OBJECT_LEFT_IN_SCAN]
     return {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
 
 
