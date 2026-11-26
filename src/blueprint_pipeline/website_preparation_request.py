@@ -8,7 +8,9 @@ its destination or mechanism with the success rule, and the execution the author
 compose-back record is the pose the rebuilt object is set back at in the room, on the removal manifest's row for it.
 
 One object per job today. The records moved here from compile unchanged, byte for byte
-(``tests/test_website_preparation_request.py``), so several objects per job have one place to grow.
+(``tests/test_website_preparation_request.py``), so several objects per job have one place to grow. A several-object
+job's further objects go in the request's ``task.additional_objects`` (``additional_objects``), each by its rank and a
+subject built as the scored one's is; no live caller names any yet, so every request leaves the field out.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import task_evaluation_scene_intake as intake
+from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECTS_FIELD
 from .website_preparation_contracts import scene_configuration_max_retries
 
 #: What a website preparation may claim (its ``claim_ceiling``), and so the intake request's ``claim_scope``.
@@ -40,12 +43,26 @@ def request_subject(entry: Mapping[str, Any], *, aabb_min: Sequence[float], aabb
             "complete_object_dimensions": complete}
 
 
+def additional_objects(further: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The request's ``task.additional_objects``: each further object a several-object job builds besides the scored
+    one, in the order given. Each record names the object's ``rank`` in the build plan (2 to 8, rising) and
+    ``request_subject``'s own inputs: the removal manifest's ``entry`` for it, its simulator-frame bounds (``aabb_min``,
+    ``aabb_max``), its geometry ``origin`` and whether its dimensions are ``complete``. Nothing is ranked, ordered or
+    checked here: the intake refuses a list the WebApp would (``task_evaluation_scene_intake.validate_request``)."""
+    return [{"rank": item["rank"],
+             "subject": request_subject(item["entry"], aabb_min=item["aabb_min"], aabb_max=item["aabb_max"],
+                                        origin=item["origin"], complete=item["complete"])} for item in further]
+
+
 def intake_request(*, capture_id: str, task_context: Mapping[str, Any], base_scene: Mapping[str, Any],
                    spend: Mapping[str, Any], articulated: bool, subject: Mapping[str, Any], support_label: Any,
                    support_aabb: Sequence[Any], mechanism: Any, destination: Any, success: Any,
-                   anthropic: bool) -> dict[str, Any]:
+                   anthropic: bool, further_objects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """The scene intake's request for the job's object. ``support_aabb``: the support's simulator-frame bounds (each
-    None when no support was found); ``anthropic``: whether the authoring writes its text with Anthropic."""
+    None when no support was found); ``anthropic``: whether the authoring writes its text with Anthropic;
+    ``further_objects``: a several-object job's further-object records (``additional_objects``). The field is left
+    out entirely when there are none, so a one-object job's request is byte for byte as before; the intake refuses it
+    on an articulated task."""
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
     owner = dict(spend.get("owner") or {})
@@ -60,6 +77,7 @@ def intake_request(*, capture_id: str, task_context: Mapping[str, Any], base_sce
         "task": {"task_id": "website-" + task_context["context_digest"][7:27],
                  "strategy": "articulated_open_close" if articulated else "pick_and_place",
                  "subject": subject,
+                 **({ADDITIONAL_OBJECTS_FIELD: additional_objects(further_objects)} if further_objects else {}),
                  "support": {"description": support_label or "support surface under subject",
                              "aabb_min_xyz": support_aabb[0], "aabb_max_xyz": support_aabb[1]},
                  **({"articulation": mechanism, "success": success} if articulated else
@@ -101,5 +119,5 @@ def composed_removal_manifest(removal_manifest: Mapping[str, Any],
     return composed
 
 
-__all__ = ["CLAIM_CEILING", "compose_back_record", "composed_removal_manifest", "geometry_origin", "intake_request",
-           "request_subject"]
+__all__ = ["CLAIM_CEILING", "additional_objects", "compose_back_record", "composed_removal_manifest", "geometry_origin",
+           "intake_request", "request_subject"]
