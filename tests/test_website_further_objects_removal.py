@@ -36,6 +36,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_build_plan_notes import (DECISION_SCHEMA, JOB_OBJECT_RECORD, plan_notes,
                                                          sealed_decision)
 from tests import test_website_further_objects as fo
+from tests import test_website_task_preparation as fx
 
 pytest.importorskip("pxr")
 
@@ -101,6 +102,56 @@ def _reviewed(capture: Path, arguments: dict, names: list[str], monkeypatch, *, 
     return json.loads((root / JOB_OBJECT_RECORD).read_text()), consumed
 
 
+# --- the removal, decided before the room is reconstructed --------------------------------------------------------
+
+def test_a_v3_decision_takes_each_free_further_object_out_with_the_jobs_object_and_keeps_the_rest(tmp_path,
+                                                                                               monkeypatch):
+    names = ["carton-1", "mug-1", "artisan-1", "can-1"]
+    arguments = fo._job(tmp_path / "fixture", ["carton-1", "mug-1", "artisan-1"])
+    arguments["removal_manifest"]["entries"].append(fo._entry("can-1", "can"))
+    decided, consumed = _reviewed(tmp_path / "capture", arguments, names, monkeypatch)
+    assert decided["schema_version"] == DECISION_SCHEMA == "atlas_job_object_rule.v3"
+    assert decided["digest"] == canonical_digest(decided, digest_field="digest")
+    assert decided["built"]["target_id"] == "cup-1"
+    # Each further object by its rank; only a rigid shape that is not a can is sure of a free build, so taken out.
+    assert decided["further"] == [
+        {"rank": 2, "target_id": "carton-1", "name": "carton", "editor_object_ids": ["e-carton-1"], "removed": True},
+        {"rank": 3, "target_id": "mug-1", "name": "mug box", "editor_object_ids": ["e-mug-1"], "removed": True},
+        {"rank": 4, "target_id": "artisan-1", "name": "toy", "editor_object_ids": ["e-artisan-1"],
+         "removed": False, "kept_in_scan_reason": "further_object_needs_artisan:website_extra_object_no_free_source"},
+        {"rank": 5, "target_id": "can-1", "name": "can", "editor_object_ids": ["e-can-1"], "removed": False,
+         "kept_in_scan_reason": "further_object_needs_artisan:website_extra_object_cylinder_can_miss_size_tolerance"}]
+    assert decided["kept_in_scan_target_ids"] == ["artisan-1", "can-1"]
+    # The scene editor erases the union of their rows, with its words for several objects.
+    assert {row["target_id"]: row["disposition"] for row in consumed["automation"]["objects"]} == {
+        "e-cup-1": "remove", "e-carton-1": "remove", "e-mug-1": "remove", "e-artisan-1": "keep", "e-can-1": "keep"}
+    assert consumed["automation"]["removal_instruction"] == build_plan.PARTIAL_REMOVAL_INSTRUCTION_SEVERAL
+    # The handoff marks each taken out with its rank: every check of the job's one object still sees one.
+    marked = build_plan.apply_to_removal(arguments["removal_manifest"], tmp_path / "capture")
+    effects = {row["target_id"]: (row["task_effect"], row.get("built_rank"), row.get("kept_in_scan_reason"))
+               for row in marked["entries"]}
+    assert effects == {"cup-1": ("manipulated", None, None), "carton-1": ("built_extra", 2, None),
+                       "mug-1": ("built_extra", 3, None), "artisan-1": ("kept_in_scan", None, "build_plan"),
+                       "can-1": ("kept_in_scan", None, "build_plan")}
+    assert [row["target_id"] for row in further.scored_entries(marked["entries"], ())] == ["cup-1"]
+    # Sealed once: a rerun reads the decision and erases the same rows.
+    again, consumed_again = _reviewed(tmp_path / "capture", arguments, names, monkeypatch)
+    assert again == decided and consumed_again == consumed
+
+
+def test_beside_a_job_object_that_opens_every_further_object_stays_in_the_scan(tmp_path, monkeypatch):
+    arguments = fo._job(tmp_path / "fixture", ["carton-1"])
+    entries = arguments["removal_manifest"]["entries"]
+    entries[0] = {**entries[0], "articulated_part": "lid", "articulation_kind": "revolute"}  # the fixture's own stays
+    decided, consumed = _reviewed(tmp_path / "capture", arguments, ["carton-1"], monkeypatch)
+    assert decided["further"] == [{"rank": 2, "target_id": "carton-1", "name": "carton",
+                                   "editor_object_ids": ["e-carton-1"], "removed": False,
+                                   "kept_in_scan_reason": "scene_intake_task_additional_objects_strategy_invalid"}]
+    assert {row["target_id"]: row["disposition"] for row in consumed["automation"]["objects"]} == {
+        "e-cup-1": "remove", "e-carton-1": "keep"}
+    assert consumed["automation"]["removal_instruction"] == build_plan.PARTIAL_REMOVAL_INSTRUCTION
+
+
 # --- a decision sealed under v2 keeps its route exactly --------------------------------------------------------------
 
 def test_a_v2_decision_keeps_its_route_byte_for_byte(tmp_path, monkeypatch):
@@ -130,6 +181,87 @@ def test_a_v2_decision_keeps_its_route_byte_for_byte(tmp_path, monkeypatch):
     assert plan_notes(decided)[1:] == [
         "The plan takes this out of the scan to build as its own object: cup.",
         "The plan keeps these in the scan as filmed, not built on their own: carton and mug box."]
+
+
+# --- removal -> handoff -> compile -> scene half -> package, end to end -------------------------------------------
+
+def _handoff(capture: Path, arguments: dict, monkeypatch) -> dict:
+    """The capture's scene handoff, as the job runs it, over the fixture's scene: the Atlas scene ready."""
+    from blueprint_pipeline import website_object_library
+    from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
+    base = {**arguments["base_scene"], "provider": "world_labs_atlas", "scale_authority": "atlas_reference_estimate"}
+    geometry = {**arguments["source_geometry"], "geometry_backend": "world_labs_atlas"}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = {**arguments["task_masks"], "source_geometry_digest": geometry["digest"]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_scene_source.atlas_scene_source", lambda **_: {
+        "status": "ready", "base_scene": base, "source_geometry": geometry, "alignment": "anchored",
+        "source_pose_digest": "sha256:" + "1" * 64, "background_pose_digest": "sha256:" + "2" * 64})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **_: masks)
+    # The scored object's own library step is not what this test is about: it keeps today's builder.
+    monkeypatch.setattr(website_object_library, "attach_library_subject", lambda removal, **_: dict(removal))
+    context = arguments["task_context"]
+    return prepare_website_scene_handoff(
+        descriptor={"capture_id": context["capture_id"], "scene_id": context["scene_id"], "metadata": {
+            "site_task_context": context, "website_scene_execution_authority": fx.SPEND}},
+        clean_plate={"status": "objects_removed", "privacy_verified": True, "source_geometry": None,
+                     "task_masks": arguments["task_masks"],
+                     "removal_manifest_path": str(capture / "pipeline" / "clean_plate" / "removal_manifest.json")},
+        capture_root=capture, now=fx.NOW)
+
+
+def test_a_v3_job_takes_out_builds_and_ships_two_free_further_objects_and_names_the_paid_one(tmp_path,
+                                                                                             monkeypatch):
+    capture = tmp_path / "capture"
+    names = ["carton-1", "mug-1", "artisan-1"]
+    arguments = fo._job(capture / "pipeline" / "fixture", names)
+    decided, consumed = _reviewed(capture, arguments, names, monkeypatch)
+    assert [row["removed"] for row in decided["further"]] == [True, True, False]
+    assert [row["target_id"] for row in consumed["automation"]["objects"] if row["disposition"] == "remove"] == [
+        "e-cup-1", "e-carton-1", "e-mug-1"]
+    # The mug box's library pick, sealed where the handoff's library step keeps each further object's.
+    from blueprint_pipeline.website_preparation_revision import workspace
+    plan_row = next(row for row in decided["build_plan"]["plan"]["objects"] if row["target_id"] == "mug-1")
+    fo._seal_pick(workspace(capture) / "object_library", plan_row, arguments["task_context"])
+    result = _handoff(capture, arguments, monkeypatch)
+    assert result["status"] == "intake_ready", result["blockers"]
+    assert result["build_plan"]["built"] == "cup-1" and result["build_plan"]["built_extra"] == 2
+    assert result["build_plan"]["kept_in_scan"] == 1
+    value = json.loads(Path(result["preparation_path"]).read_text())
+    record = value["further_objects"]
+    assert [(row["rank"], row["target_id"], row["prim_path"], row["source"]) for row in record["objects"]] == [
+        (2, "carton-1", "/World/Object_02", "parametric"), (3, "mug-1", "/World/Object_03", "library")]
+    # The paid one stays in the scan as filmed, named, under a reason that claims no limit refused it.
+    assert record["left_in_scan"] == [{"rank": 4, "target_id": "artisan-1",
+                                       "reason": "further_object_needs_artisan:website_extra_object_no_free_source"}]
+    assert "removed_not_built" not in record and record["flags"] == [further.LEFT_IN_SCAN]
+    # The job's one object is the scored one; the intake request names the two built.
+    assert value["subject"]["description"] == "cup"
+    assert [row["rank"] for row in value["intake_request"]["task"]["additional_objects"]] == [2, 3]
+    composed = json.loads((Path(result["preparation_path"]).parent / "removal_manifest.composed.json").read_text())
+    effects = {row["target_id"]: (row["task_effect"], bool((row.get("compose_back") or {}).get("pose_world")))
+               for row in composed["entries"]}
+    assert effects == {"cup-1": ("manipulated", True), "carton-1": ("built_extra", True),
+                       "mug-1": ("built_extra", True), "artisan-1": ("kept_in_scan", False)}
+    # The scene half places both after the task row, and the package ships them; the rule scores the cup alone.
+    found = further.for_revision(capture, fo._revision(capture))
+    assert [row["runtime_name"] for row in found["objects"]] == ["job_object_02", "job_object_03"]
+    published, unpacked = fo._published(tmp_path, fo._in_room(found), record, decided)
+    assert published["status"] == "published", published
+    rule = json.loads((unpacked / "success_rule.json").read_text())
+    assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02", "/World/Object_03"]
+    readme = fo._readme(unpacked)
+    for sentence in (
+            "The plan takes this out of the scan to build as its own object: cup.",
+            "Also built as their own objects, where the video shows them: carton and mug box.",
+            "Left in the scan as filmed, not built on its own: toy, because it needs a model Blueprint would "
+            "generate, and none was made for it.",
+            "The package also holds /World/Object_03 (mug box): a model of the same kind of object from a public "
+            "library, picked and sized from the video and credited under Library models",
+            "success_rule.json scores only the job's object, /World/Object."):
+        assert sentence in readme, sentence
+    assert "limit on paid work" not in readme and "keeps these in the scan" not in readme
+    assert "Test Mug Box by Google" in readme.split("Library models", 1)[1]
 
 
 # --- taken out of the scan, then not built: said so, never "in the scan" --------------------------------------------
