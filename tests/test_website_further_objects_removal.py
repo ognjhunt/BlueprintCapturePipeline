@@ -382,3 +382,17 @@ def test_a_further_object_read_otherwise_than_the_decision_read_it_is_never_buil
     for other in (None, {**decided, "schema_version": V2}):
         assert further.sealed_inputs(other, entries=entries, task_context=arguments["task_context"],
                                      library_root=tmp_path / "library") == []
+
+
+def test_the_package_readme_says_an_object_taken_out_and_not_built_is_not_in_the_simulation(tmp_path):
+    capture, value = fo._composed(tmp_path)
+    record = {**value["further_objects"], "flags": [further.REMOVED_NOT_BUILT], "removed_not_built": [
+        {"rank": 4, "target_id": "static-1", "reason": "further_object_static_check_failed:no_collider"}]}
+    published, unpacked = fo._published(tmp_path, fo._in_room(further.for_revision(capture, fo._revision(capture))),
+                                        record, fo._decision(["carton-1", "mug-1", "static-1"]))
+    assert published["status"] == "published", published
+    readme = fo._readme(unpacked)
+    assert ("Taken out of the scan to be built as its own object, but it could not be built, so it is not in this "
+            "simulation: crate, because its file did not pass Blueprint's static check.") in readme
+    assert "Also built as their own objects, where the video shows them: carton and mug box." in readme
+    assert "Left in the scan" not in readme and "keeps these in the scan" not in readme
