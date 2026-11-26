@@ -512,32 +512,54 @@ def test_a_half_without_the_arm_keeps_both_further_objects(tmp_path, monkeypatch
     assert record["further_objects"]["composed"] == ["job_object_02", "job_object_03"]
 
 
-def test_the_package_places_both_further_objects_scores_only_the_scored_one_and_credits_the_library_model(tmp_path):
+def _published(tmp_path: Path, further_objects: dict, record: dict | None) -> tuple[dict, Path]:
+    """The company's package of a half compiled with ``further_objects``, read from a capture whose preparation holds
+    ``record`` as its ``further_objects`` (as the package reads its notes and credits, ``website_half_preparation``),
+    or no such record; the publication's result and where the package was unpacked."""
     import zipfile
 
-    from pxr import Usd, UsdGeom
-
     from tests.test_website_company_simulation import Job, World, _package
-    capture, value = _composed(tmp_path)
-    compiled, _record, _plan = _half(tmp_path, _in_room(further.for_revision(capture, _revision(capture))))
+    compiled, _record, _plan = _half(tmp_path, further_objects)
     job = Job(tmp_path / "download")
-    # The half's preparation, as the package reads its notes and credits (``website_half_preparation``).
-    job.preparation.write_text(json.dumps({"further_objects": value["further_objects"]}))
+    job.preparation.write_text(json.dumps({"further_objects": record} if record is not None else {}))
     status = next((job.queue / "status").glob("*.json"))
     status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": compiled["path"]}))
     result = World(job).publish()
+    unpacked = tmp_path / "unpacked"
+    if result["status"] == "published":
+        with zipfile.ZipFile(_package(job)) as archive:
+            archive.extractall(unpacked)
+    return {**result, "job": job}, unpacked
+
+
+def _uncredited(unpacked: Path, design: dict) -> list[str]:
+    """Every shipped file holding the library model's geometry (a mesh of its topology, read independently of the
+    package's own credit) that its credit under Library models does not name. Rights: always empty."""
+    from blueprint_pipeline.website_library_notes import mesh_topologies
+    readme = " ".join((unpacked / "README.txt").read_text().split())
+    credit = readme.split("Library models", 1)[1].split("These files stay", 1)[0] if "Library models" in readme else ""
+    topology = (int(design["model_topology"][0]), str(design["model_topology"][1]))
+    holding = sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")
+                     if path.suffix in (".usd", ".usda", ".usdc", ".usdz") and topology in mesh_topologies(path))
+    assert holding, "the model's geometry is in the package"
+    return [name for name in holding if name not in credit or "Test Mug Box by Google" not in credit]
+
+
+def test_the_package_places_both_further_objects_scores_only_the_scored_one_and_credits_the_library_model(tmp_path):
+    from pxr import Usd, UsdGeom
+    capture, value = _composed(tmp_path)
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))),
+                                  value["further_objects"])
     assert result["status"] == "published", result
-    with zipfile.ZipFile(_package(job)) as archive:
-        names = archive.namelist()
-        archive.extractall(tmp_path / "unpacked")
+    names = sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*") if path.is_file())
     assert {"scene/object_02.usda", "scene/object_03.usda", "success_rule.json"} <= set(names), names
-    stage = Usd.Stage.Open(str(tmp_path / "unpacked" / "scene.usda"))
+    stage = Usd.Stage.Open(str(unpacked / "scene.usda"))
     for prim, name in (("/World/Object_02", "job_object_02"), ("/World/Object_03", "job_object_03")):
         placed = UsdGeom.Xformable(stage.GetPrimAtPath(prim)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         assert list(placed.ExtractTranslation()) == pytest.approx(ROOM_POSES[name])
-    rule = json.loads((tmp_path / "unpacked" / "success_rule.json").read_text())
+    rule = json.loads((unpacked / "success_rule.json").read_text())
     assert rule["scored_object"] == "/World/Object" and rule["not_scored"] == ["/World/Object_02", "/World/Object_03"]
-    readme = " ".join((tmp_path / "unpacked" / "README.txt").read_text().split())
+    readme = " ".join((unpacked / "README.txt").read_text().split())
     assert ("success_rule.json scores only the job's object, /World/Object. /World/Object_02 and /World/Object_03 are "
             "also the job's objects, placed where the video shows them; the rule does not score them.") in readme
     assert "scene/object_02.usda (/World/Object_02): another of the job's objects, where the video shows it." in readme
@@ -546,5 +568,48 @@ def test_the_package_places_both_further_objects_scores_only_the_scored_one_and_
     assert "Test Mug Box by Google" in credit and "scene/object_03.usda" in credit
     scored = next(name for name in names if name.startswith("object."))
     assert "scene/object_02.usda" not in credit and scored not in credit
-    variations = json.loads((tmp_path / "unpacked" / "variations.json").read_text())
+    mug = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")
+    assert _uncredited(unpacked, mug["library_design"]) == []
+    variations = json.loads((unpacked / "variations.json").read_text())
     assert {row["part"] for row in variations["objects"]} >= {"/World/Object_02", "/World/Object_03"}
+
+
+def test_a_library_objects_credit_follows_it_to_its_final_prim_when_an_earlier_one_is_left_out(tmp_path):
+    """Codex review of #3755: a half that leaves an earlier further object out renumbers the ones after it, so the
+    library model recorded as /World/Object_03 ships as /World/Object_02. Its credit follows it by its identity (its
+    runtime asset id and its file's bytes), never by the prim it was recorded at."""
+    capture, value = _composed(tmp_path)
+    carton = next(row for row in value["further_objects"]["objects"] if row["source"] == "parametric")
+    mug = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")
+    assert (carton["prim_path"], mug["prim_path"]) == ("/World/Object_02", "/World/Object_03")
+    changed = capture / "pipeline" / "website_scene_preparation" / carton["asset"]["relative_path"]
+    changed.write_bytes(changed.read_bytes() + b"\n")  # the carton's file changed since it was composed: left out
+    found = further.for_revision(capture, _revision(capture))
+    assert [row["runtime_name"] for row in found["objects"]] == ["job_object_03"]
+    result, unpacked = _published(tmp_path, _in_room(found), value["further_objects"])
+    assert result["status"] == "published", result
+    assert not (unpacked / "scene" / "object_03.usda").exists()
+    rule = json.loads((unpacked / "success_rule.json").read_text())
+    assert rule["not_scored"] == ["/World/Object_02"]
+    readme = " ".join((unpacked / "README.txt").read_text().split())
+    credit = readme.split("Library models", 1)[1]
+    assert "- scene/object_02.usda and variations.usda: Test Mug Box by Google" in credit
+    assert _uncredited(unpacked, mug["library_design"]) == []
+
+
+def test_a_further_part_its_preparation_does_not_account_for_never_leaves(tmp_path):
+    """Rights: a shipped further part that no record of its preparation names by its identity could hold a library
+    model's geometry with no credit, so the package may not leave with it; the room floor ships instead."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_library_notes as notes
+    capture, value = _composed(tmp_path)
+    found = _in_room(further.for_revision(capture, _revision(capture)))
+    renamed = {**value["further_objects"], "objects": [{**row, "runtime_asset_id": row["runtime_asset_id"] + "_x"}
+                                                       if row["source"] == "library" else row
+                                                       for row in value["further_objects"]["objects"]]}
+    for index, record in enumerate((None, renamed)):
+        result, _unpacked = _published(tmp_path / str(index), found, record)
+        source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+        assert notes.refusal(source) == notes.FURTHER_UNACCOUNTED
+        with pytest.raises(sim.ShapeRefused, match=notes.FURTHER_UNACCOUNTED):
+            sim.build_package(source, tmp_path / str(index) / "package.zip", literals=[])
