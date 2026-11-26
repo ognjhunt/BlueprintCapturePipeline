@@ -863,8 +863,8 @@ acknowledgement within 10 business days and completion within 30 days
      the outcome beside the tombstone (below);
    - keeps what each run's records name, under the report root's
      `run-scan-cache/` (`website_withdrawal_run_scan_cache`), and reads a run's
-     records again only when they changed. A plan reads at least one run and
-     stops starting new ones 25 minutes into the pass; the site is then
+     records again only when they changed. A plan keeps at least one new run
+     and stops starting new ones 25 minutes into the pass; the site is then
      `scanning`, and the next pass goes on from what was kept. The plan is the
      same as one that read everything. Before this, the first plan on the host
      read at least 9 GiB of run records (mostly the early trial's policy

@@ -149,6 +149,22 @@ def test_a_plan_stops_at_its_reading_time_after_one_run_and_the_next_goes_on_fro
     assert progress == [1, 1, 1] and plan == plain
 
 
+def test_a_run_that_cannot_be_kept_never_keeps_the_plan_from_finishing(world, monkeypatch):
+    # Codex review on #3759: a run read but not kept used to count as the pass's progress, so a pass
+    # that re-read it could stop where the last one did, every hour, for good.
+    plain = _plan(world)
+    monkeypatch.setattr(run_scan, "MAX_TOKENS", 0)  # no run that names anything can be kept
+    for _ in range(6):
+        try:
+            plan = _plan(world, run_scan_cache=world["cache"], scan_deadline=time.monotonic() - 1)
+        except run_scan.ScanBudgetSpent:
+            continue
+        break
+    else:
+        pytest.fail("the plan never finished")
+    assert plan == plain
+
+
 def test_an_unreadable_record_stays_unresolved_with_a_kept_entry(world):
     if os.geteuid() == 0:
         pytest.skip("root reads every file")

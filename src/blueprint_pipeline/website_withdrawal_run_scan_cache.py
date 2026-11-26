@@ -10,8 +10,9 @@ timeout on each of its three tries on 2026-11-25, so it was never planned and ne
 
 This module keeps, per run directory, what the plan's reading found there, and the plan reads a
 run's records again only when they changed. A plan that runs out of its time reading stops at a
-run's edge (``ScanBudgetSpent``), after reading at least one; everything it read is kept, and the
-next hourly pass goes on from there. Nothing here deletes a run or decides anything: the plan
+run's edge (``ScanBudgetSpent``), after keeping at least one new run; everything it kept stays,
+and the next hourly pass goes on from there. A run it cannot keep is read again by every plan, as
+before, and never counts as that progress. Nothing here deletes a run or decides anything: the plan
 still binds every run from these facts exactly as it would from reading.
 
 Per run directory (one file, named by the run's root and name):
@@ -170,7 +171,7 @@ class RunScanCache:
     def __init__(self, root: Path, *, deadline: float | None = None, clock=time.monotonic):
         self.root, self.deadline, self.clock = Path(root), deadline, clock
         self.identity = scanner_identity()
-        self.progress = {"runs_read": 0, "runs_reused": 0, "runs_not_kept": 0}
+        self.progress = {"runs_read": 0, "runs_kept": 0, "runs_reused": 0, "runs_not_kept": 0}
 
     def _root_dir(self, run_root: str) -> Path:
         return self.root / _key(str(run_root))[:32]
@@ -221,7 +222,7 @@ class RunScanCache:
 
         Raises ``OSError`` as reading would (a record gone, unreadable or no longer a regular file),
         and ``ScanBudgetSpent`` when the run would have to be read after the deadline and this plan
-        has already read one.
+        has already kept one.
         """
         before = _fingerprint(directory, records)
         path = self._path(run_root, name)
@@ -232,8 +233,10 @@ class RunScanCache:
                 os.close(os.open(directory / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC))
             self.progress["runs_reused"] += 1
             return kept
-        # At least one run is read per plan, so every pass moves on, however late its plan started.
-        if self.deadline is not None and self.progress["runs_read"] and self.clock() >= self.deadline:
+        # A plan keeps at least one new run before it may stop, so every pass moves on however late it
+        # started. A run read but not kept (too many tokens, or changed while read) does not count: a
+        # pass that only re-read it would stop where the last one did, and the plan would never finish.
+        if self.deadline is not None and self.progress["runs_kept"] and self.clock() >= self.deadline:
             raise ScanBudgetSpent(self.progress)
         from .website_capture_withdrawal_deletion import _require
 
@@ -246,6 +249,7 @@ class RunScanCache:
         self.progress["runs_read"] += 1
         if len(facts.tokens) <= MAX_TOKENS and _fingerprint(directory, records) == before:
             self._write(path, run_root, name, before, facts)
+            self.progress["runs_kept"] += 1
         else:
             self.progress["runs_not_kept"] += 1
         return facts
