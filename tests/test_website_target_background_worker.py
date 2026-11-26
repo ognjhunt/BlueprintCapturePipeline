@@ -214,6 +214,28 @@ def test_negative_answer_can_be_clarified_without_losing_its_retained_fact(corre
     assert json.loads(rejected.read_text()) == handoff
 
 
+def test_a_rejection_an_earlier_release_handed_off_in_its_own_words_resolves(correction_job):
+    """The rejection's archived handoff, written by a release that worded it differently, is kept as written; the
+    live handoff is today's. One that names another rejection still refuses."""
+    from blueprint_pipeline.website_target_background_correction import retain_rejected_selection
+    f = correction_job
+    ledger = {'producer_delivery_key': f['selectors']['producer_delivery_key'],
+              'source_payload_sha256': f['selectors']['source_payload_sha256']}
+    f['answer'].update(_answer(f['question'], f['selectors'], {'kind': 'none_of_these'}))
+    choice.fetch_answer(f['capture'], ledger, f['question'], now=30)
+    handoff = retain_rejected_selection(capture_root=f['capture'], task_context=f['context'], source_video=f['video'])
+    root = f['capture'] / 'pipeline/website_scene_preparation'
+    archive = root / 'rejections' / handoff['selection_rejection']['digest'][7:] / 'handoff.json'
+    earlier = {**handoff, 'blockers': ['website_task_target_selection_rejected_v0'], 'note': 'an earlier wording'}
+    archive.write_text(json.dumps(earlier))
+    again = retain_rejected_selection(capture_root=f['capture'], task_context=f['context'], source_video=f['video'])
+    assert again == handoff and json.loads((root / 'handoff.json').read_text()) == handoff
+    assert json.loads(archive.read_text()) == earlier
+    archive.write_text(json.dumps({**handoff, 'selection_rejection': {'digest': 'sha256:' + '0' * 64}}))
+    with pytest.raises(ValueError, match='website_target_correction_retained_record_changed'):
+        retain_rejected_selection(capture_root=f['capture'], task_context=f['context'], source_video=f['video'])
+
+
 def test_reaffirming_the_original_guess_releases_only_its_rejected_outcome(correction_job):
     from blueprint_pipeline.website_target_background_correction import retain_rejected_selection
     from blueprint_pipeline.website_preparation_revision import workspace

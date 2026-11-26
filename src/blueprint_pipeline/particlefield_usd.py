@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 from pathlib import Path
+import re
 import tempfile
 from typing import Any, Sequence
 import zipfile
@@ -37,6 +38,7 @@ from .gaussian_splat_decode import (
     SplatData,
     read_aura_2dgs_surfel_ply,
     read_standard_3dgs_ply,
+    standard_3dgs_ply_rows,
     write_standard_3dgs_ply,
 )
 from .nurec_volume_codec import (
@@ -205,6 +207,121 @@ def build_particlefield_arrays(
         "positive_infinite_opacity_logit_count": int(np.isposinf(raw_opacity).sum()),
         "negative_infinite_opacity_logit_count": int(np.isneginf(raw_opacity).sum()),
     }
+
+
+#: Gaussians a PLY source's look reads and builds at a time (``write_particlefield_usd``). A room's draft holds
+#: tens of millions of Gaussians: the decoded splat, every attribute and its USD copy held at once came to about
+#: 233 bytes a Gaussian at degree 0, 5.9 GiB for a 30 M room (2026-11-24 sweep).
+LOOK_CHUNK_ROWS = 1 << 18
+
+
+def _streamed_particlefield_arrays(path: Path, *, sh_rest_layout: str) -> dict:
+    """``build_particlefield_arrays(read_standard_3dgs_ply(path))``, each array a USD array built a run at a time.
+
+    The PLY's body is read from its memory map. Each attribute is filled ``LOOK_CHUNK_ROWS`` rows at a time and
+    handed to USD before the next is built, so only one attribute is held twice. The checks run in the base's order
+    and every value is the one the whole arrays give: each is computed row by row.
+    """
+    from pxr import Vt
+
+    rows, index = standard_3dgs_ply_rows(path)
+    count = int(rows.shape[0])
+    if count < 1:
+        raise ValueError("particlefield_splat_count_invalid")
+    rest_names = sorted((name for name in index if re.fullmatch(r"f_rest_[0-9]+", name)),
+                        key=lambda name: int(name.rsplit("_", 1)[1]))
+
+    def columns(*names: str) -> list[int]:
+        return [index[name] for name in names]
+
+    xyz, scale, rotation, dc = (columns("x", "y", "z"), columns("scale_0", "scale_1", "scale_2"),
+                                columns("rot_0", "rot_1", "rot_2", "rot_3"), columns("f_dc_0", "f_dc_1", "f_dc_2"))
+    opacity, rest = index["opacity"], columns(*rest_names)
+
+    def runs():
+        for start in range(0, count, LOOK_CHUNK_ROWS):
+            yield slice(start, min(count, start + LOOK_CHUNK_ROWS)), np.asarray(rows[start:start + LOOK_CHUNK_ROWS])
+
+    for _, block in runs():
+        if (not all(np.isfinite(block[:, picked]).all() for picked in (xyz, scale, rotation, dc))
+                or np.isnan(block[:, opacity]).any()):
+            raise ValueError("particlefield_nonfinite_input")
+
+    def built(width: int, fill, kind, per_row: int = 1) -> Any:
+        """``fill``'s rows for every run, ``per_row`` of them for each Gaussian, as one USD array."""
+        values = np.empty((count * per_row, width), dtype=np.float32)
+        for where, block in runs():
+            values[where.start * per_row:where.stop * per_row] = fill(block)
+        array = kind.FromNumpy(values if width > 1 else values.reshape(-1))
+        del values
+        return array
+
+    lower, upper = np.full(3, np.inf, np.float32), np.full(3, -np.inf, np.float32)
+
+    def position(block: np.ndarray) -> np.ndarray:
+        value = block[:, xyz].astype(np.float32)
+        lower[:], upper[:] = np.minimum(lower, value.min(axis=0)), np.maximum(upper, value.max(axis=0))
+        return value
+
+    def activated_scale(block: np.ndarray) -> np.ndarray:
+        with np.errstate(over="ignore", invalid="ignore"):
+            value = np.exp(block[:, scale].astype(np.float32)).astype(np.float32)
+        if not np.isfinite(value).all() or (value <= 0.0).any():
+            raise ValueError("particlefield_activated_scale_invalid")
+        return value
+
+    def orientation(block: np.ndarray) -> np.ndarray:
+        q = block[:, rotation].astype(np.float64)
+        norm = np.linalg.norm(q, axis=1, keepdims=True)
+        if (norm <= np.finfo(np.float32).eps).any():
+            raise ValueError("particlefield_zero_quaternion")
+        # A Gf.Quatf is laid out imaginary part first: (x, y, z, w), as the whole-array writer stores it.
+        return (q / norm).astype(np.float32)[:, [1, 2, 3, 0]]
+
+    arrays: dict[str, Any] = {"count": count}
+    arrays["positions"] = built(3, position, Vt.Vec3fArray)
+    arrays["scales"] = built(3, activated_scale, Vt.Vec3fArray)
+    arrays["orientations"] = built(4, orientation, Vt.QuatfArray)
+    infinite = [0, 0]
+
+    def activated_opacity(block: np.ndarray) -> np.ndarray:
+        raw = block[:, opacity].astype(np.float32)
+        infinite[0] += int(np.isposinf(raw).sum())
+        infinite[1] += int(np.isneginf(raw).sum())
+        return _sigmoid(raw).astype(np.float32)[:, None]
+
+    arrays["opacities"] = built(1, activated_opacity, Vt.FloatArray)
+    n_rest = len(rest) // 3
+    if rest:
+        for _, block in runs():
+            if not np.isfinite(block[:, rest]).all():
+                raise ValueError("particlefield_sh_rest_invalid")
+        if sh_rest_layout not in (SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR, SH_REST_LAYOUT_COEFFICIENT_MAJOR):
+            raise ValueError("particlefield_sh_rest_layout_invalid")
+    total = 1 + n_rest
+    degree = int(round(total ** 0.5)) - 1
+    if (degree + 1) ** 2 != total:
+        raise ValueError("particlefield_sh_coefficient_count_invalid")
+
+    def coefficients(block: np.ndarray) -> np.ndarray:
+        n = len(block)
+        value = block[:, dc].astype(np.float32).reshape(n, 1, 3)
+        if rest:
+            more = block[:, rest].astype(np.float32)
+            more = (more.reshape(n, 3, n_rest).transpose(0, 2, 1)
+                    if sh_rest_layout == SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR else more.reshape(n, n_rest, 3))
+            value = np.concatenate([value, more], axis=1)
+        return value.reshape(n * total, 3)
+
+    arrays["sh_coefficients"] = built(3, coefficients, Vt.Vec3fArray, per_row=total)
+    arrays["display_colors"] = built(3, lambda block: np.clip(
+        0.5 + SH_C0 * block[:, dc].astype(np.float32), 0.0, 1.0).astype(np.float32), Vt.Vec3fArray)
+    arrays.update(
+        sh_degree=degree, sh_element_size=int(total),
+        source_sh_rest_layout=sh_rest_layout if rest else None,
+        extent=np.stack([lower, upper]).astype(np.float32),
+        positive_infinite_opacity_logit_count=infinite[0], negative_infinite_opacity_logit_count=infinite[1])
+    return arrays
 
 
 def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
@@ -528,13 +645,17 @@ def write_particlefield_usd(
                 "expected_source_sha256": expected_source_sha256,
                 "observed_source_sha256": source_sha256,
             }
-    splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
-    effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
-    arr = build_particlefield_arrays(
-        splat,
-        sh_rest=effective_sh_rest,
-        sh_rest_layout=sh_rest_layout,
-    )
+    if source_path is not None and sh_rest is None:
+        # The PLY's own coefficients, read and built a run at a time: the same arrays, never all held twice.
+        arr = _streamed_particlefield_arrays(source_path, sh_rest_layout=sh_rest_layout)
+    else:
+        splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
+        effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
+        arr = build_particlefield_arrays(
+            splat,
+            sh_rest=effective_sh_rest,
+            sh_rest_layout=sh_rest_layout,
+        )
     field_quality = measure_gaussian_field_quality(
         positions=arr["positions"],
         activated_scales=arr["scales"],
@@ -587,14 +708,19 @@ def write_particlefield_usd(
         UsdGeom.Xformable(prim).AddTransformOp().Set(matrix)
 
     def vec3f(a: np.ndarray):
+        if isinstance(a, Vt.Vec3fArray):  # built as a USD array already (``_streamed_particlefield_arrays``)
+            return a
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(a, dtype=np.float32))
+
+    def floats(a: np.ndarray):
+        if isinstance(a, Vt.FloatArray):
+            return a
+        return Vt.FloatArray.FromNumpy(np.ascontiguousarray(a, dtype=np.float32))
 
     if field:
         field.CreatePositionsAttr(vec3f(arr["positions"]))
         field.CreateScalesAttr(vec3f(arr["scales"]))
-        field.CreateOpacitiesAttr(
-            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
-        )
+        field.CreateOpacitiesAttr(floats(arr["opacities"]))
         sh_attr = field.CreateRadianceSphericalHarmonicsCoefficientsAttr(
             vec3f(arr["sh_coefficients"])
         )
@@ -604,9 +730,7 @@ def write_particlefield_usd(
             vec3f(arr["positions"])
         )
         prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(vec3f(arr["scales"]))
-        prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
-            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
-        )
+        prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(floats(arr["opacities"]))
         sh_attr = prim.CreateAttribute(
             "radiance:sphericalHarmonicsCoefficients",
             Sdf.ValueTypeNames.Float3Array,
@@ -644,12 +768,19 @@ def write_particlefield_usd(
         if field
         else prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray)
     )
-    try:
-        quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q[:, [1, 2, 3, 0]], dtype=np.float32)))
-    except Exception:  # noqa: BLE001
-        quat_attr.Set(
-            Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])
-        )
+    if isinstance(q, Vt.QuatfArray):  # stored (x, y, z, w) already, as below
+        quat_attr.Set(q)
+    else:
+        try:
+            quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q[:, [1, 2, 3, 0]], dtype=np.float32)))
+        except Exception:  # noqa: BLE001
+            quat_attr.Set(
+                Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])
+            )
+    # The stage holds every attribute now: the arrays it was given go before it is saved.
+    for key in ("positions", "scales", "orientations", "opacities", "sh_coefficients", "display_colors"):
+        arr.pop(key)
+    del q
 
     stage.GetRootLayer().Save()
     if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:

@@ -553,6 +553,13 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
     return count
 
 
+#: What a retained selection was made from and asked for: the video, its survey, the scene-state review, the
+#: privacy screen, and the profile its caller passes (the recorded one, ``website_atlas_pipeline._splat_input_options``).
+_SELECTION_IDENTITY = ("source_video_digest", "survey_digest", "scene_state_review_digest", "privacy_screen",
+                       "splat_frame_target", "relative_sharpness_fraction", "minimum_source_frames",
+                       "repose_view_cost_usd")
+
+
 def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames, minimum_frames=0,
                            splat_frame_target=0, relative_sharpness_fraction=0, repose_view_cost_usd=0):
     """Reuse a completed CPU handoff only with its current source/privacy bytes.
@@ -628,24 +635,39 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     support_count = decisions.count("overlapping_support_view")
     spread_count = decisions.count("time_spread_view")
     require(0 <= support_count + spread_count <= len(prepared) - cover_count)
-    require(inputs.get("binding") == {
+    current_binding = {
         "source_video_digest": survey["source_video_digest"], "maximum_frames": maximum,
         "adapter_version": 3, "survey_digest": survey["digest"],
         "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy,
         **splat_profile, **sharpness_profile, **selection_profile,
-        **({"repose_view_cost_usd": repose_view_cost_usd} if repose_view_cost_usd else {})})
+        **({"repose_view_cost_usd": repose_view_cost_usd} if repose_view_cost_usd else {})}
+    current_policy = {"basis": "accuracy_first", "provider_input_capacity": capacity,
+                      "frame_target": maximum, "connected_cover_frames": cover_count,
+                      "distinct_views_added": len(prepared) - cover_count - support_count - spread_count,
+                      **({**splat_profile, "time_spread_views_added": spread_count,
+                          "splat_frame_target_met": len(prepared) >= splat_frame_target}
+                         if splat_frame_target else {}),
+                      **({**sharpness_profile, "relative_sharpness_floor": round(floor, 4),
+                          "cover_frames_below_relative_sharpness_floor": below}
+                         if relative_sharpness_fraction else {}),
+                      **({**selection_profile, "overlapping_support_views_added": support_count,
+                          "minimum_source_frames_met": len(prepared) >= minimum_frames} if minimum_frames else {})}
+    binding = inputs.get("binding") or {}
+    if binding != current_binding or policy != current_policy:
+        # A selection an earlier release made for this video, survey, review, privacy screen and profile: kept as
+        # written, as the pose request binds its digest. Comparing its binding and policy whole with what today's
+        # code computes beside them (the adapter version, the policy's fields, the floor's computation and
+        # rounding) refused every step past view selection on any such change (2026-11-24 sweep). Its frames,
+        # coverage, privacy and dollars are checked as before; another profile or capacity still refuses.
+        require(all(binding.get(key) == current_binding.get(key) for key in _SELECTION_IDENTITY)
+                and type(binding.get("maximum_frames")) is int and binding["maximum_frames"] >= cover_count
+                and policy.get("basis") == "accuracy_first"
+                # The caller passes the recorded capacity unless an operator set an explicit limit: one that differs
+                # asks for a new selection, never a rewrite of this one.
+                and policy.get("provider_input_capacity") == capacity
+                and policy.get("frame_target") == binding["maximum_frames"] == plan.get("maximum_frames"))
+        maximum = binding["maximum_frames"]
     require(plan.get("maximum_frames") == maximum and plan.get("selected_frame_count") == len(prepared)
-            and policy == {"basis": "accuracy_first", "provider_input_capacity": capacity,
-                           "frame_target": maximum, "connected_cover_frames": cover_count,
-                           "distinct_views_added": len(prepared) - cover_count - support_count - spread_count,
-                           **({**splat_profile, "time_spread_views_added": spread_count,
-                               "splat_frame_target_met": len(prepared) >= splat_frame_target}
-                              if splat_frame_target else {}),
-                           **({**sharpness_profile, "relative_sharpness_floor": round(floor, 4),
-                               "cover_frames_below_relative_sharpness_floor": below}
-                              if relative_sharpness_fraction else {}),
-                           **({**selection_profile, "overlapping_support_views_added": support_count,
-                               "minimum_source_frames_met": len(prepared) >= minimum_frames} if minimum_frames else {})}
             and plan.get("privacy_screen") == privacy
             and plan.get("task_and_surrounding_scene_covered") is _covered(review, plan.get("diagnostics") or [])
             and (review.get('review_scope') != 'observed_room_only' or plan.get('observed_room_only') is True)
@@ -864,7 +886,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     # Scene preparation reads the posed views as source geometry, so keep the
     # exact document the pose binds to, not only its digest.
     retained = root / GEOMETRY_INPUTS_FILE
-    if retained.is_file() and json.loads(retained.read_text()) != inputs:
+    # Inputs a run wrote before it stopped short of its plan (no retained selection): no pose request was made from
+    # them while ``atlas_pose_inputs.json`` is absent, so today's selection replaces them; refusing did so forever.
+    if (retained.is_file() and json.loads(retained.read_text()) != inputs
+            and (root / "atlas_pose_inputs.json").exists()):
         raise ValueError("atlas_geometry_inputs_identity_conflict")
     write_json(retained, inputs)
     # Surrounding-scene frames left out are reported, never claimed as covered.

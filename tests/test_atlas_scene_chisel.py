@@ -154,3 +154,47 @@ def test_depth_projection_keeps_optical_z_and_marks_unseen_rays_empty(tmp_path):
     record = chisel.prepare_depth_context(frames=[frame], selected=[row], root=tmp_path)['empty']
     assert record['known_depth_pixel_count'] == 0 and Image.open(record['path']).mode == 'L'
     assert not np.asarray(Image.open(record['path'])).any()
+
+
+def test_a_completion_that_sent_nothing_follows_todays_inputs_and_plan_and_one_that_sent_refuses(tmp_path):
+    """2026-11-24 sweep: a completion plan rebuilt from its views refused mid-completion though nothing was bought.
+    Before any batch is submitted, its photographs, masks, depth and plan are written again; after, they refuse."""
+    import json
+    from blueprint_pipeline.common import write_json
+
+    def frames_with(shift):
+        frames = [source('a'), source('b', .2)]
+        rgb = ((frames[0]['rgb'].astype(np.int16) + shift) % 256).astype(np.uint8)
+        return [posed_frame(frame_id='a', rgb=rgb, depth=frames[0]['depth'], confidence=frames[0]['confidence'],
+                            camera={key: frames[0][key] for key in ('intrinsics', 'extrinsics')}), frames[1]]
+
+    def refused(**kw):
+        raise ValueError('website_scene_preparation_budget_exhausted')  # refused before any send
+
+    frames = frames_with(0)
+    pool = candidates(frames)
+    root = tmp_path / 'completion'
+    args = dict(selected=pool, candidates=pool, root=root,
+                pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
+                configuration={'remaining_cost_usd': 1.6, 'policy': {'rgbd_view_cost_usd': .05,
+                    'mesh_export_cost_usd': .5, 'rate_card_reference': 'retained rate card', 'reviewed_by': 'test',
+                    'reviewed_on': '2026-10-23'}}, max_polls=1)
+    with pytest.raises(ValueError, match='budget_exhausted'):
+        chisel.generate_chisel_completion(frames=frames, task_runner=refused, **args)
+    first = json.loads((root / 'chisel-completion-plan.json').read_text())
+    with pytest.raises(ValueError, match='budget_exhausted'):
+        chisel.generate_chisel_completion(frames=frames_with(7), task_runner=refused, **args)
+    second = json.loads((root / 'chisel-completion-plan.json').read_text())
+    assert second['digest'] != first['digest']
+    assert second['source_photographs'][0]['image_digest'] != first['source_photographs'][0]['image_digest']
+
+    def sends(**kw):
+        stage = kw['output_root']
+        (stage / 'atlas_pose').mkdir(parents=True, exist_ok=True)
+        write_json(stage / 'atlas_pose/submission.json', {'status': 'submitting'})
+        return {'status': 'processing'}
+
+    assert chisel.generate_chisel_completion(frames=frames_with(7), task_runner=sends, **args)[1]['status'] == \
+        'processing'
+    with pytest.raises(ValueError, match='atlas_completion_preservation_inputs_changed'):
+        chisel.generate_chisel_completion(frames=frames_with(9), task_runner=sends, **args)

@@ -247,10 +247,15 @@ def test_small_synthetic_handoff_persists_exactly_the_pre_change_bytes(tmp_path,
         assert path.read_text() == written(plain), name
         assert value["digest"] == stdlib_digest(plain, "digest") == canonical_track_digest(value, digest_field="digest")
         assert blanked_digest(value) == SMALL_HANDOFF_BLANKED[name], name
-    # The family preparation leaves with plain lists (its record goes on to the handoff and status
-    # readers); ``source_targets`` carry every full source track, and equal the bound targets.
-    assert all(type(row["runs"]) is list for target in preparation["task_evaluation_inputs"]["source_targets"]
-               for track in (target["source_track"], target["track"]) for row in track["observations"])
+    # The family preparation leaves with its tracks' runs as they came, kept surfaces compact (each hop its
+    # record takes hashes and writes it with the codec); ``source_targets`` carry every full source track,
+    # and equal the bound targets.
+    for target, kept_target in zip(preparation["task_evaluation_inputs"]["source_targets"], bound["targets"]):
+        for track in ("source_track", "track"):
+            assert ([type(row["runs"]) for row in target[track]["observations"]]
+                    == [type(row["runs"]) for row in kept_target[track]["observations"]])
+    assert any(type(row["runs"]) is RunLengths for target in preparation["task_evaluation_inputs"]["source_targets"]
+               for row in target["source_track"]["observations"])
     assert preparation["task_evaluation_inputs"]["source_targets"] == bound["targets"]
     assert preparation["binding"]["task_masks_digest"] == bound["digest"]
     # A rerun reads its own retained bytes back and changes nothing.

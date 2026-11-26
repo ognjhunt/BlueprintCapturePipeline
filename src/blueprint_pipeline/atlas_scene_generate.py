@@ -15,6 +15,7 @@ from .common import write_json
 from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .atlas_scene_preservation import follows_today_until_sent, rewritable
 
 
 def prepare_rgbd_context(*, frames, root):
@@ -30,7 +31,7 @@ def prepare_rgbd_context(*, frames, root):
         key = f'context-{index}'
         uploads[key + '-rgb'] = {'path': photo['image_path'], 'sha256': photo['image_digest']}
         linear = write_exr_depth(root / key / 'depth.exr', project_source_depth(
-            [by_id[photo['source_frame_id']]], photo['camera']))
+            [by_id[photo['source_frame_id']]], photo['camera']), replace=rewritable(root / key / 'depth.exr'))
         uploads[key + '-depth'] = {'path': str(linear), 'sha256': _sha256_file(linear)}
         contexts.append({'imageAsset': {'assetId': 'upload:' + key + '-rgb'},
                          'depth': {'depthAsset': {'assetId': 'upload:' + key + '-depth'}},
@@ -38,6 +39,7 @@ def prepare_rgbd_context(*, frames, root):
     return contexts, uploads, photos
 
 
+@follows_today_until_sent
 def generate_rgbd_completion(*, frames, selected, candidates, root, pose, context,
                              configuration, task_runner, max_polls, scene_caption='',
                              checkpoint=None, geometry_frames=None, reference_frames=None,
@@ -138,7 +140,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
                           for group, request, _, quote in specs]}
     binding['digest'] = canonical_digest(binding, digest_field='digest')
     plan = root / 'rgbd-completion-plan.json'
-    if plan.exists() and json.loads(plan.read_text()) != binding:
+    if plan.exists() and json.loads(plan.read_text()) != binding and not rewritable(plan):
         raise ValueError('atlas_completion_generate_plan_changed')
     write_json(plan, binding)
     assets = [plan, *[Path(row['path']) for row in uploads.values()],

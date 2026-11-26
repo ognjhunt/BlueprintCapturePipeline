@@ -157,8 +157,10 @@ def run_website_capture_preparation(
         allow_operation_coverage_review=True, allow_static_target_recovery=True, allow_build_choice=True,
     )
     handoff_lease_checkpoint("website_preparation_after_native_handoff")
+    from .core.handoff_lease import guarded_handoff_write_track_json
     from .website_recapture_required import retains_recapture_required
-    write_json(pipeline_dir / "provider_run_manifest.json", {
+    # A family route's preparation carries its targets' source tracks compact: written as the plain lists' bytes.
+    guarded_handoff_write_track_json(pipeline_dir / "provider_run_manifest.json", {
         "schema_version": "v1", "provider_name": None, "status": "not_requested",
         "website_scene_preparation": preparation,
     })

@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .website_track_mask_codec import canonical_track_digest
 
 #: A geometry-only job's preparation (``website_atlas_pipeline.ROUTE_ENV``) ends at the
 #: robot fit check: never an intake.
@@ -287,7 +288,7 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         task_context.get("schema_version") == "website_site_task_context.v1"
         and digest == canonical_digest(task_context, digest_field="context_digest")
         and handoff.get("schema_version") == "website_scene_handoff.v1"
-        and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+        and handoff.get("digest") == canonical_track_digest(handoff, digest_field="digest")
         and all(handoff.get(key) == task_context[key] for key in ("scene_id", "capture_id"))
         and handoff.get("status") == "needs_input"
         and handoff.get("blockers") == [code]
@@ -315,7 +316,7 @@ def retains_room_package(handoff: Mapping[str, Any], task_context: Mapping[str, 
         package = handoff.get("room_package") or {}
         record = json.loads(Path(package["path"]).read_text())
         return (handoff.get("schema_version") == "website_scene_handoff.v1"
-                and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+                and handoff.get("digest") == canonical_track_digest(handoff, digest_field="digest")
                 and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
                 and handoff.get("status") == "room_package_written" and handoff.get("blockers") == []
                 and handoff.get("job_disposition") == "accepted" and handoff.get("simulator_ready") is False
@@ -348,7 +349,7 @@ def retains_navigation_preparation(handoff: Mapping[str, Any], task_context: Map
         if (not isinstance(record, Mapping) or not isinstance(intake, Mapping) or not isinstance(inputs, Mapping)
                 or not isinstance(digest, str) or digest != canonical_digest(task_context, digest_field="context_digest")
                 or handoff.get("schema_version") != "website_scene_handoff.v1"
-                or handoff.get("digest") != canonical_digest(handoff, digest_field="digest")
+                or handoff.get("digest") != canonical_track_digest(handoff, digest_field="digest")
                 or any(handoff.get(key) != task_context.get(key) for key in ("scene_id", "capture_id"))
                 or handoff.get("status") != "intake_ready" or handoff.get("blockers") != []
                 or handoff.get("job_disposition") != "accepted" or handoff.get("simulator_ready") is not False
@@ -391,7 +392,7 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
         if (family is None or not isinstance(inputs, Mapping)
                 or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
                 or handoff.get("schema_version") != "website_scene_handoff.v1"
-                or handoff.get("digest") != canonical_digest(handoff, digest_field="digest")
+                or handoff.get("digest") != canonical_track_digest(handoff, digest_field="digest")
                 or any(handoff.get(key) != task_context.get(key) for key in ("scene_id", "capture_id"))
                 or handoff.get("visual_reconstruction_ready") is not True
                 or handoff.get("simulator_ready") is not False
@@ -543,7 +544,7 @@ def retains_geometry_only_fit(handoff: Mapping[str, Any], task_context: Mapping[
     return (isinstance(fit, Mapping) and isinstance(task_context, Mapping)
             and fit.get("status") in {"completed", "not_run"}
             and handoff.get("schema_version") == "website_scene_handoff.v1"
-            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and handoff.get("digest") == canonical_track_digest(handoff, digest_field="digest")
             and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
             and handoff.get("atlas_route") == "geometry_only" and handoff.get("status") == "needs_input"
             and GEOMETRY_ONLY_BLOCKER in (handoff.get("blockers") or [])
@@ -576,7 +577,7 @@ def retains_robot_fit_hold(handoff: Mapping[str, Any], task_context: Mapping[str
             and precheck.get("status") == "no_fit"
             and isinstance(precheck.get("digest"), str) and isinstance(precheck.get("path"), str)
             and handoff.get("schema_version") == "website_scene_handoff.v1"
-            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and handoff.get("digest") == canonical_track_digest(handoff, digest_field="digest")
             and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
             and handoff.get("status") == "needs_input" and handoff.get("blockers") == earlier + [hold]
             and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False

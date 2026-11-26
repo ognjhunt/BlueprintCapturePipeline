@@ -20,7 +20,7 @@ from .task_family_scoring import (
     canonical_task_family,
     validate_task_family_contract,
 )
-from .website_track_mask_codec import canonical_track_digest, detached_track_json, plain_runs, write_track_json
+from .website_track_mask_codec import canonical_track_digest, detached_track_json, write_track_json
 
 
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
@@ -159,8 +159,10 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     # ``source_targets`` carries every target's full-video source track, compact runs included:
     # hashed, detached and written by the codec, chunk by chunk, to the bytes and digest
     # ``canonical_digest``, ``json.loads(json.dumps(value, allow_nan=False))`` and ``write_json``
-    # give. The preparation leaves with plain lists, as the handoff record and its readers expect.
+    # give. It leaves compact too: every run as a dict was about 256 bytes against 8 (60 s of
+    # 1080p: 1.5 GiB more), and each hop the record takes (the revision binding, the handoff
+    # record, the stage's manifest and its checks) hashes and writes it with the codec.
     value["digest"] = canonical_track_digest(value, digest_field="digest")
     detached = detached_track_json(value)
     write_track_json(output_root / "preparation.json", detached)
-    return plain_runs(detached)
+    return detached

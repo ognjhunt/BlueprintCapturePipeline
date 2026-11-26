@@ -65,12 +65,63 @@ PARSER_SECONDS_PER_MASK_MEGAPIXEL = 0.5
 _BOX = re.compile(r"<\|box;x1=(\d+);y1=(\d+);x2=(\d+);y2=(\d+);")
 
 
+def _box_area(text: str) -> int:
+    return sum(max(0, int(x2) - int(x1)) * max(0, int(y2) - int(y1)) for x1, y1, x2, y2 in _BOX.findall(text))
+
+
+def _parse_measure(size_bytes: int, box_area: int) -> float:
+    return max(PARSER_SECONDS_PER_MIB * (size_bytes / (1024 * 1024)),
+               PARSER_SECONDS_PER_MASK_MEGAPIXEL * (box_area / 1e6))
+
+
 def parser_timeout_seconds(text: str) -> int:
     """The parser's time limit: the larger of the text's and the decoded boxes' measure, within the bounds."""
-    size = len(text.encode("utf-8")) / (1024 * 1024)
-    area = sum(max(0, int(x2) - int(x1)) * max(0, int(y2) - int(y1)) for x1, y1, x2, y2 in _BOX.findall(text)) / 1e6
-    seconds = max(PARSER_SECONDS_PER_MIB * size, PARSER_SECONDS_PER_MASK_MEGAPIXEL * area)
+    seconds = _parse_measure(len(text.encode("utf-8")), _box_area(text))
     return int(min(PARSER_TIMEOUT_BOUNDS_S[1], max(PARSER_TIMEOUT_BOUNDS_S[0], math.ceil(seconds))))
+
+
+#: An answer is parsed a run of whole lines at a time: each frame is one line (``<Nf>`` and its masks), which the
+#: parser reads on its own. A run's measure (``parser_timeout_seconds``'s, before its bounds) is at most this, so
+#: no run reaches the one-hour cap a long 4K answer's whole text passed (the 2026-11-24 sweep: about 37 minutes a
+#: prompt for 5 minutes of 4K, and past about 9 minutes of 4K the cap itself), and the parser holds one run's
+#: records, not the answer's. Each run's masks are kept as it ends (``parse_tracks``'s ``resume_root``): a pass
+#: that is ended or times out goes on at the first run not kept, never from the answer's start.
+PARSE_CHUNK_SECONDS = 600
+PARSE_CHUNK_SCHEMA = "meta_sam31_parse_chunk.v1"
+_JS_RUNTIME, _PYTHON_RUNTIME = "@meta-sam/parser@0.0.12", "meta-sam-parser==0.0.5"
+
+
+def answer_chunks(text: str) -> list[str]:
+    """``text`` cut at line ends into runs of whole lines, each within ``PARSE_CHUNK_SECONDS`` by the parser's
+    measure (a longer line is a run of its own). Joined with newlines, they are ``text``."""
+    chunks: list[str] = []
+    lines: list[str] = []
+    size = area = 0
+    for line in text.split("\n"):
+        line_size, line_area = len(line.encode("utf-8")) + 1, _box_area(line)
+        if lines and _parse_measure(size + line_size, area + line_area) > PARSE_CHUNK_SECONDS:
+            chunks.append("\n".join(lines))
+            lines, size, area = [], 0, 0
+        lines.append(line)
+        size, area = size + line_size, area + line_area
+    chunks.append("\n".join(lines))
+    return chunks
+
+
+def _kept_chunk(path: Path, binding: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A run's kept masks when they were parsed from this run of this answer; else None, and it is parsed again
+    (they derive from the paid answer at no cost, so a record from another release or plan is never a refusal)."""
+    try:
+        kept = load_track_json(path)
+        if (kept.get("schema_version") == PARSE_CHUNK_SCHEMA
+                and {key: value for key, value in (kept.get("binding") or {}).items() if key != "parser_runtime"}
+                == dict(binding)
+                and kept.get("binding", {}).get("parser_runtime") in (_JS_RUNTIME, _PYTHON_RUNTIME)
+                and kept.get("digest") == canonical_track_digest(kept, digest_field="digest")):
+            return kept
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return None
 
 
 #: HTTP statuses the provider answers when it refused a request without processing it.
@@ -429,11 +480,17 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
 
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                  registry: Sequence[Mapping[str, Any]],
-                 backend_out: list[str] | None = None) -> list[dict[str, Any]]:
+                 backend_out: list[str] | None = None, resume_root: Path | None = None,
+                 resume_binding: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Tracks whose observations hold each mask's whole-frame runs as a compact ``RunLengths``.
 
     ``runs`` reads, iterates, compares and encodes like the list of ``{"start", "length"}``
     dicts, without holding one Python dict per run (a 4K video's large surfaces reach millions).
+
+    The answer is parsed a run of whole frame lines at a time (``answer_chunks``), each with its own
+    time limit; a later run's mask of an object in a frame replaces an earlier one, as in one text.
+    With ``resume_root``, each run's masks are kept there as it ends, bound to ``resume_binding``
+    and the run's text, and a run already kept is read back instead of parsed.
     """
     from meta_sam_parser import (CompletedOutcome, InvalidSegmentationMaskError,
                                  SegmentationMaskIdentity, SegmentationMaskRecord,
@@ -452,6 +509,7 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
     if any((int(w), int(h)) != (width, height) for w, h in re.findall(r";w=(\d+);h=(\d+)\|>", text)):
         raise ValueError("meta_sam_source_dimensions_mismatch")
     observations: dict[str, dict[int, dict[str, Any]]] = {}
+    found: dict[str, dict[int, dict[str, Any]]] = {}  # the run being parsed
 
     def accept_mask(object_id: str, index: int, box: Sequence[int],
                     mask_width: int, mask_height: int, decoded: bytes) -> None:
@@ -468,7 +526,7 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
         # The box's runs in the whole frame, as if pasted into it; no frame-sized array per mask.
-        observations.setdefault(object_id, {})[index] = {
+        found.setdefault(object_id, {})[index] = {
             "source_frame_id": registry[index]["source_frame_id"], "width": width, "height": height,
             "runs": raster_runs(raster, left=left, top=top, width=width),
         }
@@ -502,15 +560,43 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                         [bounds.left, bounds.top, bounds.right, bounds.bottom],
                         mask.width, mask.height, decoded)
 
-    used_js = _parse_js_rasters(text, accept_mask)
-    if not used_js:
+    def parsed(chunk: str) -> str:
+        if _parse_js_rasters(chunk, accept_mask):
+            return _JS_RUNTIME
         parser = _SingleDecodeParser()
-        parser.push(text, emit=False)
-        parsed = parser.finish(CompletedOutcome()).result
-        if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
+        parser.push(chunk, emit=False)
+        result = parser.finish(CompletedOutcome()).result
+        if result.diagnostics or any(row.kind == "text" and row.text.strip() for row in result.records):
             raise ValueError("meta_sam_output_malformed")
+        return _PYTHON_RUNTIME
+
+    runtimes: list[str] = []
+    for number, chunk in enumerate(answer_chunks(text)):
+        binding = {**dict(resume_binding or {}), "chunk": number,
+                   "chunk_sha256": "sha256:" + hashlib.sha256(chunk.encode("utf-8")).hexdigest()}
+        path = None if resume_root is None else resume_root / f"chunk-{number:05d}.json"
+        kept = None if path is None else _kept_chunk(path, binding)
+        found.clear()
+        if kept is not None:
+            for row in kept["observations"]:
+                found.setdefault(row["object_id"], {})[int(row["frame_index"])] = row["observation"]
+            runtime = kept["binding"]["parser_runtime"]
+        else:
+            runtime = parsed(chunk)
+            if path is not None:
+                record = {"schema_version": PARSE_CHUNK_SCHEMA, "binding": {**binding, "parser_runtime": runtime},
+                          "observations": [{"object_id": object_id, "frame_index": index, "observation": row}
+                                           for object_id, rows in found.items() for index, row in rows.items()]}
+                record["digest"] = canonical_track_digest(record, digest_field="digest")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_track_json(path.with_suffix(".tmp"), record)
+                os.replace(path.with_suffix(".tmp"), path)
+        for object_id, rows in found.items():
+            observations.setdefault(object_id, {}).update(rows)
+        runtimes.append(runtime)
     if backend_out is not None:
-        backend_out.append("@meta-sam/parser@0.0.12" if used_js else "meta-sam-parser==0.0.5")
+        # One parser for every run, as one text had; a resumed answer whose runs had two says both.
+        backend_out.append("+".join(dict.fromkeys(runtimes)))
     # No invented confidence; IDs are never stitched across disappearance/occlusion.
     return [{"track_id": f"meta-sam31-{prompt['prompt_id']}-{oid}", "label": prompt["output_label"],
              "label_source": "model_inferred", "observations": [rows[i] for i in sorted(rows)]}
@@ -1096,22 +1182,34 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             parsed_path = root / f"parsed-response-{index}.json"
             parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
                               "parser_revision": 1, "profile": PROFILE}
-            if parsed_path.is_file():
-                parsed = load_track_json(parsed_path)
-                if (parsed.get("binding") != parsed_binding
-                        or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
+            try:
+                parsed = load_track_json(parsed_path) if parsed_path.is_file() else None
+            except (OSError, ValueError):
+                parsed = {}
+            if parsed is not None and (parsed.get("binding") != parsed_binding
+                                       or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
+                # Parsed by another parser revision, from another answer, or changed since. Static recovery reads
+                # only what it retained, so there it refuses; otherwise the kept answer is parsed again, buying
+                # nothing: a parser revision bump refused every retained parse (2026-11-24 sweep).
+                if require_retained_video:
                     raise ValueError("meta_sam_retained_tracks_changed")
+                parsed = None
+            if parsed is not None:
                 decoded = parsed["tracks"]
             else:
                 if require_retained_video:
                     raise ValueError("meta_sam_retained_tracks_changed")
                 backend: list[str] = []
-                decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
+                # Each run of the answer's frame lines is kept as it is parsed: a pass ended part way resumes there.
+                chunks = root / f"parsed-response-{index}.chunks"
+                decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend,
+                                       resume_root=chunks, resume_binding=parsed_binding)
                 parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
                 parsed["digest"] = canonical_track_digest(parsed, digest_field="digest")
                 temporary = parsed_path.with_suffix(".tmp")
                 write_track_json(temporary, parsed)
                 os.replace(temporary, parsed_path)
+                shutil.rmtree(chunks, ignore_errors=True)
             tracks.extend(decoded)
             receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
         result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
