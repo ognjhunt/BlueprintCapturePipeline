@@ -989,10 +989,14 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # An object the plan would build that a limit on the job's paid work kept as filmed, named, with the
             # website's refusal code as received; it covers the dollar cap and the paid-request count alike (2026-11-23).
             from .website_build_plan_notes import kept_disclosure, sealed_budget
-            taken = sum(1 for row in further_rows(planned) if row.get("removed") is True)
+            rows = further_rows(planned)  # each further object of a v3 decision, after any alone erase
+            taken = sum(1 for row in rows if row.get("removed") is True)
+            kept = [*(planned.get("kept_in_scan_target_ids") or []), *(
+                row["target_id"] for row in rows if row.get("removed") is not True
+                and row["target_id"] not in (planned.get("kept_in_scan_target_ids") or []))]
             result["build_plan"] = {"digest": planned["build_plan"]["digest"],
                                     "built": (planned.get("built") or {}).get("target_id"),
-                                    "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or []),
+                                    "kept_in_scan": len(kept),
                                     **({"built_extra": taken} if taken else {}),
                                     **kept_disclosure(sealed_budget(capture_root), planned)}
         # Capture truth applies to held families too. Reading this retained

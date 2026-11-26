@@ -396,3 +396,130 @@ def test_the_package_readme_says_an_object_taken_out_and_not_built_is_not_in_the
             "simulation: crate, because its file did not pass Blueprint's static check.") in readme
     assert "Also built as their own objects, where the video shows them: carton and mug box." in readme
     assert "Left in the scan" not in readme and "keeps these in the scan" not in readme
+
+
+# --- the editor cannot take the further objects out with the job's object: it erases the job's object alone ----------
+
+FLOOR = {"status": "needs_input", "background": {"status": "needs_input", "reason": "atlas_removal_visibility_incomplete"}}
+
+
+def _atlas_job(tmp_path, monkeypatch, alone_outcome):
+    """``tests.test_website_build_plan``'s Atlas job, with a tote (the job's object) and a carton the plan builds as a
+    parametric carton, and a scene editor whose erase of both stops where the room would go as filmed; its erase of
+    the tote alone ends ``alone_outcome``. Returns the job's runner, the editor's calls and the as-filmed calls."""
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline.website_build_plan_notes import JOB_OBJECT_ALONE_AUTOMATION
+    from tests import test_website_build_plan as plans
+    from tests.test_website_atlas_pipeline import _bought_review, _job, _preparation
+    root, run, _automated, posed = _job(tmp_path, monkeypatch, _bought_review(),
+                                        clean_plate=("objects_removed", plans.ENTRIES))
+    _preparation(tmp_path)
+    carton = {**plans.FILMED_PLAN["objects"][1], "sourcing": "parametric", "parametric_shape": "carton"}
+    monkeypatch.setattr(build_plan, "ask_gemini", lambda **_: {"answer": {"objects": [
+        plans.FILMED_PLAN["objects"][0], carton, *plans.FILMED_PLAN["objects"][2:]]}})
+    calls = []
+
+    def editor(**kw):
+        calls.append(kw)
+        return alone_outcome if Path(kw["output_root"]).name == JOB_OBJECT_ALONE_AUTOMATION else FLOOR
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", editor)
+    return root, run, calls, posed
+
+
+def test_a_further_object_the_editor_cannot_erase_never_costs_the_job_its_object(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as atlas
+    from blueprint_pipeline.website_build_plan_notes import (ERASE_FALLBACK_RECORD, JOB_OBJECT_ALONE_AUTOMATION,
+                                                             NOT_ERASED, further_rows)
+    root, run, calls, posed = _atlas_job(tmp_path, monkeypatch, {"status": "completed", "background": {}})
+    # The union erase stops where the room would go as filmed: sealed once, and the next run erases the tote alone.
+    assert run() == {"status": "processing", "stage": "job_object_erased_alone"}
+    (union,) = calls
+    assert Path(union["output_root"]).name == "automation"
+    assert [row["disposition"] for row in union["review"]["automation"]["objects"]] == ["remove", "remove", "keep",
+                                                                                         "keep"]
+    record = json.loads((root / ERASE_FALLBACK_RECORD).read_text())
+    assert record["cause"] == "atlas_removal_visibility_incomplete" and record["further_target_ids"] == ["carton"]
+    assert record["decision_digest"] == json.loads((root / JOB_OBJECT_RECORD).read_text())["digest"]
+    assert not (root / atlas.BACKGROUND_FLOOR_RECORD).exists()  # the room is not floored for the carton
+    # The tote alone, in its own folder, with the words for one object: exactly as a v2 decision erases it.
+    assert run() == {"status": "processing", "stage": "source_pose"}
+    alone = calls[1]
+    assert Path(alone["output_root"]).name == JOB_OBJECT_ALONE_AUTOMATION
+    assert [row["disposition"] for row in alone["review"]["automation"]["objects"]] == ["keep", "remove", "keep",
+                                                                                        "keep"]
+    assert alone["review"]["automation"]["removal_instruction"] == build_plan.PARTIAL_REMOVAL_INSTRUCTION
+    assert not (root / atlas.BACKGROUND_FLOOR_RECORD).exists() and "job_object_rule" not in (posed[0].get("review") or {})
+    run()
+    assert len(calls) == 3 and Path(calls[2]["output_root"]).name == JOB_OBJECT_ALONE_AUTOMATION  # sealed once
+    # The carton stays in the scan as filmed, under a reason that says why.
+    decided = sealed_decision(tmp_path)
+    assert decided[NOT_ERASED]["digest"] == record["digest"]
+    assert [(row["removed"], row["kept_in_scan_reason"]) for row in further_rows(decided)] == [
+        (False, "further_object_not_erasable:atlas_removal_visibility_incomplete")]
+    from tests import test_website_build_plan as plans
+    marked = build_plan.apply_to_removal({"entries": plans.ENTRIES}, tmp_path)
+    assert [row["task_effect"] for row in marked["entries"]] == ["manipulated", "kept_in_scan", "static_contact"]
+    assert plan_notes(decided)[1:3] == [
+        "The plan takes this out of the scan to build as its own object: blue tote (one tote of parts).",
+        "The plan keeps these in the scan as filmed, not built on their own: carton."]
+    # The result names the folder the background was made in, for the scene source.
+    result = atlas.finalize_background_result(output_root=tmp_path / "result", source_digest="sha256:" + "0" * 64,
+                                              task_context={"context_digest": "task"},
+                                              automation={"status": "completed", "background": {}}, source_pose=None,
+                                              model="agent", automation_root=JOB_OBJECT_ALONE_AUTOMATION)
+    assert result["automation_relative_path"] == JOB_OBJECT_ALONE_AUTOMATION
+
+
+def test_when_the_job_object_alone_cannot_be_erased_either_the_room_goes_as_filmed_as_before(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as atlas
+    root, run, calls, posed = _atlas_job(tmp_path, monkeypatch, FLOOR)
+    assert run() == {"status": "processing", "stage": "job_object_erased_alone"}
+    assert run() == {"status": "processing", "stage": "source_pose"} and len(calls) == 2
+    assert json.loads((root / atlas.BACKGROUND_FLOOR_RECORD).read_text())["reason"] == FLOOR["background"]["reason"]
+    assert posed[0]["review"]["job_object_rule"]["background_not_cleaned"] == FLOOR["background"]["reason"]
+
+
+def test_after_the_job_object_was_erased_alone_its_further_objects_ship_in_the_scan_named(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as atlas
+    capture = tmp_path / "capture"
+    names = ["carton-1", "mug-1", "artisan-1"]
+    arguments = fo._job(capture / "pipeline" / "fixture", names)
+    _reviewed(capture, arguments, names, monkeypatch)
+    # Money is never a reason to erase again: at the job's cap the room goes as filmed, as ever (and a stop that would
+    # not floor the room is not one either).
+    from blueprint_pipeline.website_job_spend_cap import SPENDING_CAP_REACHED
+    for stop in (SPENDING_CAP_REACHED, "atlas_edit_source_changed"):
+        assert atlas._erase_alone(capture / "pipeline" / "atlas", {"status": "needs_input", "background": {
+            "status": "needs_input", "reason": stop}}) is False
+    assert atlas._erase_alone(capture / "pipeline" / "atlas", FLOOR) is True
+    assert atlas._erase_alone(capture / "pipeline" / "atlas", FLOOR) is False  # once
+    result = _handoff(capture, arguments, monkeypatch)
+    assert result["status"] == "intake_ready", result["blockers"]  # the job's object is built
+    assert "built_extra" not in result["build_plan"] and result["build_plan"]["kept_in_scan"] == 3
+    value = json.loads(Path(result["preparation_path"]).read_text())
+    assert value["subject"]["description"] == "cup" and "additional_objects" not in value["intake_request"]["task"]
+    record = value["further_objects"]
+    assert record["objects"] == [] and "removed_not_built" not in record and record["flags"] == [further.LEFT_IN_SCAN]
+    not_erased = "further_object_not_erasable:atlas_removal_visibility_incomplete"
+    assert record["left_in_scan"] == [
+        {"rank": 2, "target_id": "carton-1", "reason": not_erased},
+        {"rank": 3, "target_id": "mug-1", "reason": not_erased},
+        {"rank": 4, "target_id": "artisan-1", "reason": "further_object_needs_artisan:website_extra_object_no_free_source"}]
+    composed = json.loads((Path(result["preparation_path"]).parent / "removal_manifest.composed.json").read_text())
+    assert {row["target_id"]: row["task_effect"] for row in composed["entries"]} == {
+        "cup-1": "manipulated", "carton-1": "kept_in_scan", "mug-1": "kept_in_scan", "artisan-1": "kept_in_scan"}
+    # The package reads the decision and its record of the alone erase as the job sealed them.
+    from blueprint_pipeline.website_build_plan_notes import ERASE_FALLBACK_RECORD
+    from tests.test_website_company_simulation import CAPTURE, SITE
+    atlas_root = capture / "pipeline" / "atlas"
+    shipped = tmp_path / "download" / f"storage/source-bucket/scenes/{SITE}/captures/{CAPTURE}" / "pipeline" / "atlas"
+    shipped.mkdir(parents=True)
+    (shipped / ERASE_FALLBACK_RECORD).write_bytes((atlas_root / ERASE_FALLBACK_RECORD).read_bytes())
+    published, unpacked = fo._published(tmp_path, None, record,
+                                        json.loads((atlas_root / JOB_OBJECT_RECORD).read_text()))
+    assert published["status"] == "published", published
+    readme = fo._readme(unpacked)
+    for name in ("carton", "mug box"):
+        assert (f"Left in the scan as filmed, not built on its own: {name}, because Blueprint could not take it out "
+                "of the video's views cleanly.") in readme
+    assert "Taken out of the scan" not in readme and "also takes" not in readme and "Also built" not in readme

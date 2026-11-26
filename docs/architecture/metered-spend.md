@@ -715,7 +715,12 @@ Known edges:
   of the scan does add the scene editor's own visibility checks for it
   (`atlas_removal_visibility`: one retained Gemini call for each selected view
   segmentation left without its outline, at most 12 per object), reserved on the
-  job's preparation spend like every other editor call.
+  job's preparation spend like every other editor call. When the editor cannot
+  take the further objects out with the job's object (a stop that would keep the
+  room as filmed, never the cap), the Atlas job erases the job's object alone,
+  once, in its own folder (`website_atlas_pipeline._erase_alone`): that erase is
+  bought again at what it costs for the one object, admitted inside the job's
+  $40 like any other editor call; at the cap the room goes as filmed, as ever.
 - **One code for two limits.** Above: the WebApp contract is unchanged, so the
   Pipeline cannot tell a dollar-cap refusal from a paid-request-count one, and
   says only what is true of both.

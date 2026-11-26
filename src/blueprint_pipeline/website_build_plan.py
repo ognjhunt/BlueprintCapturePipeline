@@ -28,7 +28,9 @@ the job's object, each further object sure of a free source before the room is r
 builds each at no cost where the video shows it and composes it back (``website_further_objects``). Each is marked
 ``BUILT_EXTRA`` with its rank on the removal manifest (``apply_to_removal``), so every check of the job's one object
 still sees one. Every other object stays in the room as filmed, as before; one that needs the paid generated model
-stays there until stage 6 builds it. A decision sealed under v2 keeps its route exactly: its first object alone is
+stays there until stage 6 builds it. When the scene editor cannot take the further objects out with the job's object,
+the Atlas job erases the job's object alone, once, and every further object stays in the scan as filmed, named
+(``website_atlas_pipeline._erase_alone``): a further object never costs the job its object. A decision sealed under v2 keeps its route exactly: its first object alone is
 taken out. A job with one rigid object keeps today's route; its plan is recorded. The plan, in plain words, goes into
 the company's README (``build_plan_notes``): what it needs, the objects it takes out of the scan to build, what it
 keeps as filmed, what the video does not show. Never a claim that an object was built: the package's own notes say

@@ -24,6 +24,16 @@ from .website_object_words import plain_phrase
 DECISION_SCHEMA = "atlas_job_object_rule.v3"
 #: Every sealed decision that carries a plan, read alike; only ``DECISION_SCHEMA`` takes further objects out.
 PLAN_SCHEMAS = ("atlas_job_object_rule.v2", DECISION_SCHEMA)
+#: An Atlas job whose scene editor could not take a v3 decision's further objects out of the views with the job's
+#: object (a stop that would keep the whole room as filmed, never money) erases the job's object alone, once, as a v2
+#: decision does (``website_atlas_pipeline``): its sealed record beside the decision, the automation root that erase
+#: runs in, and the field ``sealed_decision`` names the record by. Each further object then stays in the scan as
+#: filmed, under ``NOT_ERASABLE`` with the editor's stop after a ``:``.
+ERASE_FALLBACK_SCHEMA = "atlas_further_objects_not_erased.v1"
+ERASE_FALLBACK_RECORD = "further_objects_not_erased.json"
+JOB_OBJECT_ALONE_AUTOMATION = "automation_job_object_alone"
+NOT_ERASED = "further_objects_not_erased"
+NOT_ERASABLE = "further_object_not_erasable"
 #: ``website_atlas_pipeline.JOB_OBJECT_RECORD``, named here so this module imports nothing of the build path.
 JOB_OBJECT_RECORD = "job_object_rule.json"
 NOT_IN_VIDEO = "not_in_video"
@@ -86,24 +96,59 @@ def kept_disclosure(budget: Mapping[str, Any] | None, decided: Mapping[str, Any]
 
 
 def sealed_decision(capture_root: Path) -> dict[str, Any] | None:
-    """The Atlas job's sealed job-object decision when it carries a plan (``PLAN_SCHEMAS``), else None."""
+    """The Atlas job's sealed job-object decision when it carries a plan (``PLAN_SCHEMAS``), else None; with the
+    record that its job's object was erased alone (``with_erase_fallback``) when there is one. A record of that which
+    does not seal itself is never read, and nor is the decision it names (None), as for a tampered decision."""
+    root = Path(capture_root) / "pipeline" / "atlas"
     try:
-        decided = json.loads((Path(capture_root) / "pipeline" / "atlas" / JOB_OBJECT_RECORD).read_text())
+        decided = json.loads((root / JOB_OBJECT_RECORD).read_text())
     except (OSError, ValueError):
         return None
     if (not isinstance(decided, Mapping) or decided.get("schema_version") not in PLAN_SCHEMAS
             or decided.get("digest") != canonical_digest(decided, digest_field="digest")):
         return None
-    return dict(decided)
+    try:
+        return with_erase_fallback(decided, root)
+    except ValueError:
+        return None
+
+
+def erase_fallback(atlas_root: Path, decided: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The Atlas job's sealed record that it erased a v3 decision's job object alone (``ERASE_FALLBACK_RECORD``), when
+    one is there, seals itself and names this decision by its digest; else None. Raises when one is there that does
+    not, so a job never takes the union erase and the alone erase both from one record."""
+    path = Path(atlas_root) / ERASE_FALLBACK_RECORD
+    if not isinstance(decided, Mapping) or decided.get("schema_version") != DECISION_SCHEMA or not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        value = None
+    if (not isinstance(value, Mapping) or value.get("schema_version") != ERASE_FALLBACK_SCHEMA
+            or value.get("decision_digest") != decided.get("digest") or not isinstance(value.get("cause"), str)
+            or value.get("digest") != canonical_digest(value, digest_field="digest")):
+        raise ValueError("atlas_further_objects_not_erased_record_invalid")
+    return dict(value)
+
+
+def with_erase_fallback(decided: Mapping[str, Any], atlas_root: Path) -> dict[str, Any]:
+    """The decision with its job's record of an alone erase (``NOT_ERASED``, ``erase_fallback``) when there is one."""
+    fallback = erase_fallback(atlas_root, decided)
+    return {**decided, NOT_ERASED: fallback} if fallback else dict(decided)
 
 
 def further_rows(decided: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """Each further object a decision sealed under ``DECISION_SCHEMA`` names (``website_build_plan.further_removal``),
     by rank: ``removed`` when it was taken out of the scan with the job's object, to be built on its own, else with its
-    ``kept_in_scan_reason``. Empty for a decision sealed earlier, whose further objects all stay in the scan."""
+    ``kept_in_scan_reason``. When the scene editor could not take them out with the job's object (``NOT_ERASED``),
+    none was: each stays in the scan, under ``NOT_ERASABLE`` and the editor's stop. Empty for a decision sealed
+    earlier, whose further objects all stay in the scan."""
     if not isinstance(decided, Mapping) or decided.get("schema_version") != DECISION_SCHEMA:
         return []
-    return [dict(row) for row in decided.get("further") or [] if isinstance(row, Mapping)
+    cause = (decided.get(NOT_ERASED) or {}).get("cause")
+    return [{**row, "removed": False, "kept_in_scan_reason": f"{NOT_ERASABLE}:{cause}"}
+            if cause and row.get("removed") is True else dict(row)
+            for row in decided.get("further") or [] if isinstance(row, Mapping)
             and isinstance(row.get("target_id"), str) and type(row.get("rank")) is int]
 
 
@@ -146,6 +191,7 @@ def plan_names(decided: Mapping[str, Any] | None) -> dict[str, str]:
 #: (``website_further_objects``; named here, since that module is the build path): its code up to the first ``:``, and
 #: for an overlap, what it meets. Any other code is said as ``LEFT_FOR_ANOTHER_REASON``, never guessed at.
 LEFT_WORDS = {"further_object_needs_artisan": "it needs a model Blueprint would generate, and none was made for it",
+              NOT_ERASABLE: "Blueprint could not take it out of the video's views cleanly",
               "further_object_not_tracked": "Blueprint could not follow it through the video's frames",
               "further_object_scene_not_registered": "the room scan could not be lined up with the video",
               "further_object_support_not_found": "no surface under it was found in the room scan",
@@ -258,8 +304,10 @@ def build_plan_notes(capture_root: Path, further: Mapping[str, Any] | None = Non
     return {"plan_notes": notes} if notes else {}
 
 
-__all__ = ["ALSO_TAKEN", "BUDGET_RECORD", "BUDGET_SCHEMA", "BUILT_TOO", "DECISION_SCHEMA", "JOB_OBJECT_RECORD",
-           "KEPT_AT_CAP", "KEPT_AT_CAP_NOTE", "LEFT_FOR_ANOTHER_REASON", "LEFT_IN_SCAN", "LEFT_WORDS", "NOT_IN_VIDEO",
-           "OVERLAP_WORDS", "PLAN_SCHEMAS", "REFUSAL_CODE_MEANS_ONE_OF", "REMOVED_NOT_BUILT", "ROLE_WORDS", "SHAPE_WORDS",
-           "UNNAMED", "budget_root", "build_plan_notes", "further_rows", "kept_at_cap", "kept_disclosure", "left_words",
-           "plain_name", "plan_names", "plan_notes", "sealed_budget", "sealed_decision"]
+__all__ = ["ALSO_TAKEN", "BUDGET_RECORD", "BUDGET_SCHEMA", "BUILT_TOO", "DECISION_SCHEMA", "ERASE_FALLBACK_RECORD",
+           "ERASE_FALLBACK_SCHEMA", "JOB_OBJECT_ALONE_AUTOMATION", "JOB_OBJECT_RECORD", "KEPT_AT_CAP",
+           "KEPT_AT_CAP_NOTE", "LEFT_FOR_ANOTHER_REASON", "LEFT_IN_SCAN", "LEFT_WORDS", "NOT_ERASABLE", "NOT_ERASED",
+           "NOT_IN_VIDEO", "OVERLAP_WORDS", "PLAN_SCHEMAS", "REFUSAL_CODE_MEANS_ONE_OF", "REMOVED_NOT_BUILT", "ROLE_WORDS",
+           "SHAPE_WORDS", "UNNAMED", "budget_root", "build_plan_notes", "erase_fallback", "further_rows", "kept_at_cap",
+           "kept_disclosure", "left_words", "plain_name", "plan_names", "plan_notes", "sealed_budget", "sealed_decision",
+           "with_erase_fallback"]
