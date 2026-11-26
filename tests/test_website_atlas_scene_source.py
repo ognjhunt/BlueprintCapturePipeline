@@ -61,8 +61,11 @@ def write(path: Path, value):
     return value
 
 
-def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False, cameras=CAMERAS):
-    """The source pose as the preview leaves it: native upright views and an admitted run bound to them."""
+def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False, cameras=CAMERAS, blind=()):
+    """The source pose as the preview leaves it: native upright views and an admitted run bound to them.
+
+    ``blind``: views Atlas returned finite depth for but zero confidence everywhere.
+    """
     rng = np.random.default_rng(11)
     frames, outputs, sent, returned, sources = [], [], [], [], []
     for index, ((rotation_cv, position), frame_id) in enumerate(zip(cameras, FRAME_IDS)):
@@ -93,7 +96,7 @@ def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False, came
         out.mkdir(parents=True)
         cv2.imwrite(str(out / "image.png"), atlas_rgb[..., ::-1])
         write_exr(out / "depth.exr", plane_depth(rotation_cv, position))
-        cv2.imwrite(str(out / "confidence.png"), np.full((GRID[1], GRID[0]), 200, np.uint8))
+        cv2.imwrite(str(out / "confidence.png"), np.full((GRID[1], GRID[0]), 0 if index in blind else 200, np.uint8))
         outputs.append([{"role": role, "asset_id": f"asset_{role}_{index}", "sha256": _sha256_file(out / name),
                          "path": f"atlas_pose/outputs/{index:06d}/{name}", "bytes": (out / name).stat().st_size}
                         for role, name in (("image", "image.png"), ("depth", "depth.exr"),
@@ -150,12 +153,13 @@ def background_views(job_dir: Path, cameras):
 
 
 def job_fixture(capture_root: Path, *, same_pose=False, padded=False, cameras=CAMERAS, views=False,
-                room_rotation=np.eye(3), room=None):
+                room_rotation=np.eye(3), room=None, blind=()):
     job_dir = capture_root / "pipeline" / "atlas"
     survey = write(job_dir / "survey" / "atlas_video_survey.json", digest({
         "schema_version": "atlas_video_survey.v1", "display_rotation_degrees": ROTATION, "frames": []}))
     write(job_dir / "selection_binding.json", {"survey_relative_path": "survey/atlas_video_survey.json"})
-    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"], padded=padded, cameras=cameras)
+    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"], padded=padded, cameras=cameras,
+                                       blind=blind)
     measurements = write(job_dir / "pose" / "scene_measurements.json", digest({
         "schema_version": "atlas_scene_measurements.v1", "status": "estimated", "meters_per_unit_estimate": MPU,
         "scale_status": "estimated_from_named_assumptions", "metric_measurement_proven": False}))
@@ -566,6 +570,30 @@ def test_tracks_on_the_source_timeline_lift_onto_atlas_geometry_by_frame_identit
     points = masked_source_points(target["track"], geometry["frames"])
     np.testing.assert_allclose(points @ PLANE_NORMAL, PLANE_OFFSET * MPU, rtol=1e-4)
     assert target["estimated_visible_bounds"]["unit"] == "estimated_meters"
+
+
+def test_a_portrait_view_atlas_gave_no_confidence_is_left_out_and_the_task_lifts_on_the_views_kept(tmp_path):
+    # The owner's apartment clip (portrait, 2026-11-24): the crop map was exact, but three of 204 views came back
+    # with zero confidence everywhere, and the job's scene preparation stopped on every retry.
+    geometry = ready(tmp_path, blind={1})["source_geometry"]
+    assert [frame["frame_id"] for frame in geometry["frames"]] == [FRAME_IDS[0], FRAME_IDS[2]]
+    left_out = geometry["views_without_depth"]
+    assert [(row["frame_id"], row["view_index"], row["reason"]) for row in left_out] == [
+        (FRAME_IDS[1], 1, "atlas_source_geometry_no_valid_depth")]
+    assert left_out[0]["positive_depth_fraction"] == 1.0 and left_out[0]["positive_confidence_fraction"] == 0.0
+    # The object was masked on the first two views; only the one with depth lifts it, onto the plane.
+    bound = bind_task_masks_to_geometry(task_masks=continuous_masks(), source_geometry=geometry)
+    target = bound["targets"][0]
+    assert [row["source_frame_id"] for row in target["track"]["observations"]] == [FRAME_IDS[0]]
+    points = masked_source_points(target["track"], geometry["frames"])
+    np.testing.assert_allclose(points @ PLANE_NORMAL, PLANE_OFFSET * MPU, rtol=1e-4)
+    assert target["estimated_visible_bounds"]["unit"] == "estimated_meters"
+
+
+def test_scene_preparation_still_stops_when_fewer_views_keep_depth_than_a_source_geometry_holds(tmp_path):
+    job_fixture(tmp_path, blind={0, 1})
+    with pytest.raises(ValueError, match="atlas_source_geometry_no_valid_depth"):
+        source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
 
 
 def off_geometry(target, **fields):
