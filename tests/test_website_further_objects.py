@@ -593,17 +593,18 @@ def _decision(targets: list[str]) -> dict:
 
 
 def _published(tmp_path: Path, further_objects: dict, record: dict | None,
-               decided: dict | None = None) -> tuple[dict, Path]:
+               decided: dict | None = None, extra: dict | None = None) -> tuple[dict, Path]:
     """The company's package of a half compiled with ``further_objects``, read from a capture whose preparation holds
     ``record`` as its ``further_objects`` (as the package reads its notes and credits, ``website_half_preparation``),
-    or no such record, and whose Atlas job sealed ``decided``; the publication's result and where the package was
-    unpacked."""
+    or no such record (and ``extra``), and whose Atlas job sealed ``decided``; the publication's result and where the
+    package was unpacked."""
     import zipfile
 
     from tests.test_website_company_simulation import Job, World, _package
     compiled, _record, _plan = _half(tmp_path, further_objects)
     job = Job(tmp_path / "download")
-    job.preparation.write_text(json.dumps({"further_objects": record} if record is not None else {}))
+    job.preparation.write_text(json.dumps({**({"further_objects": record} if record is not None else {}),
+                                           **(extra or {})}))
     if decided is not None:
         (job.capture / "pipeline" / "atlas").mkdir(parents=True, exist_ok=True)
         (job.capture / "pipeline" / "atlas" / "job_object_rule.json").write_text(json.dumps(decided))
@@ -895,3 +896,46 @@ def test_the_job_objects_own_refused_credit_still_ships_the_room_floor(tmp_path)
                            {"further_withheld": [{"runtime_asset_id": "x", "asset_sha256": "y", "reason": "z"}]})
     assert refused == {"library_refusal": notes.CREDIT_UNREADABLE}
     assert notes.refusal({"files": {"Object": {"role": "task_object"}}, **refused}) == notes.CREDIT_UNREADABLE
+
+
+# --- S4: each further object varied on its own evidence ------------------------------------------------------------
+
+def test_each_further_object_is_varied_on_its_own_size_and_mass_evidence_never_the_job_objects(tmp_path):
+    """A further object's variation ranges rest on its own evidence, as the job's object's do: its plan row's mass
+    quoted from the site's words, else the mass prior from its own size in the video; for size, the video's scale band.
+    The site's answer of the item's weight is the job's object's alone."""
+    capture, value = _composed(tmp_path)
+    decided = _decision(["carton-1", "mug-1"])
+    plan = decided["build_plan"]["plan"]["objects"]
+    plan[1] = {**plan[1], "mass_kg": {"low": 0.2, "high": 0.4, "basis": "site_words"}}  # the carton's, as the site said
+    decided["digest"] = canonical_digest(decided, digest_field="digest")
+    answer = {"authoring_inputs": {"configuration": {"construction_constraints": {
+        "operator_task_details": {"item_weight": "2 kg"}}}, "metric_envelope": value["authoring_inputs"]["metric_envelope"]}}
+    result, unpacked = _published(tmp_path, _in_room(further.for_revision(capture, _revision(capture))),
+                                  value["further_objects"], decided, answer)
+    assert result["status"] == "published", result
+    by_part = {row["part"]: row["ranges"] for row in json.loads((unpacked / "variations.json").read_text())["objects"]}
+    assert by_part["/World/Object"]["mass_kg"]["from"] == "site_answer_item_weight"  # the job's object's own answer
+    carton, mug = by_part["/World/Object_02"], by_part["/World/Object_03"]
+    assert {key: carton["mass_kg"][key] for key in ("low", "high", "basis", "from")} == {
+        "low": 0.2, "high": 0.4, "basis": "site_answer", "from": "build_plan_site_words"}
+    prior = next(row for row in value["further_objects"]["objects"] if row["source"] == "library")[
+        "asset_receipt"]["physics_bounds"]["mass_kg"]
+    assert [mug["mass_kg"][key] for key in ("low", "high", "basis", "from")] == [
+        round(prior[0], 6), round(prior[1], 6), "video_estimate", "video_size_prior"]
+    for ranges in (carton, mug):
+        assert (ranges["scale"]["basis"], ranges["scale"]["from"]) == ("video_estimate", "video_scale_band")
+        assert [ranges["scale"]["low"], ranges["scale"]["high"]] == [0.75, round(1 / 0.75, 6)]
+        assert ranges["static_friction"]["basis"] == "default"
+    readme = _readme(unpacked)
+    assert "/World/Object_02: size (video_estimate), mass (site_answer) and friction (default)." in readme
+    assert "/World/Object_03: size (video_estimate), mass (video_estimate) and friction (default)." in readme
+    # Matched by identity, never by prim: a part another object's evidence does not name gets default bands.
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_object_variations as variations
+    source = sim.simulation_source(result["job"].capture, queue_root=result["job"].queue)
+    assert variations._told(source, "Object_02")["mass_kg"]["from"] == "build_plan_site_words"
+    rows = source["variation_evidence"][variations.FURTHER_EVIDENCE]
+    renamed = {**source, "variation_evidence": {**source["variation_evidence"], variations.FURTHER_EVIDENCE: [
+        {**row, "asset_sha256": "sha256:" + "0" * 64} for row in rows]}}
+    assert variations._told(renamed, "Object_02") == {}

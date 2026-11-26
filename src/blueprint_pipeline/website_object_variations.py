@@ -33,9 +33,13 @@ Each range records its basis, the first of these that gives one:
   this: nothing reads them from the video (the preparation's friction range is Blueprint's standard prior).
 
 The evidence is read from the half's own preparation and the job's sealed build plan (``evidence``, with the half's
-other disclosures, ``website_half_preparation``). It describes the one object that preparation authored, the plan's
-first object part (``EVIDENCE_PART``); a further object gets default bands until its own evidence reaches the package.
-Only numbers and fixed words ship: never the site's words (a build plan quote, an answer's text, the plan's names).
+other disclosures, ``website_half_preparation``). The job's object's describes the plan's first object part
+(``EVIDENCE_PART``). Each further object of the job (``website_further_objects``) has its own (``FURTHER_EVIDENCE``),
+matched to the part it ships as by its identity, never its prim: its build plan row's size or mass, else the mass
+prior from its own size in the video that its file was authored with, and for size the same scale band; the site's
+quick answer of the item's weight and Blueprint's weight estimate are the job's object's, never another's. A part
+with none gets default bands. Only numbers and fixed words ship: never the site's words (a build plan quote, an
+answer's text, the plan's names).
 
 Samples are deterministic: each draw is a sha256 of the plan's digest, the object's part and file digest, the sample
 and the quantity, so the same inputs give the same bytes, and the same zip. Neither digest ships.
@@ -72,6 +76,8 @@ SAMPLES = 8
 SITE_ANSWER, VIDEO_ESTIMATE, DEFAULT = "site_answer", "video_estimate", "default"
 #: The part the preparation's evidence describes: the plan's first object (one object per job today).
 EVIDENCE_PART = "Object"
+#: Where each further object's own evidence is kept, by its identity (``website_library_notes.identity``).
+FURTHER_EVIDENCE = "further_objects"
 #: Where nothing the site said or the video showed gives a range: a narrow band around the value in the object's file,
 #: as a factor (a shift for roughness), so a sample stays close to the object as built.
 DEFAULT_BANDS = {"scale": (0.9, 1.1), "mass_kg": (0.8, 1.25), "static_friction": (0.8, 1.2),
@@ -166,7 +172,8 @@ def _planned(row: Mapping[str, Any], key: str, said: bool) -> dict[str, Any] | N
 def evidence(preparation: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """What the half's own ``preparation`` and the job's sealed build plan say of the preparation's object, for its
     variations: ``{"variation_evidence": {EVIDENCE_PART: {"scale" | "mass_kg": row}}}``, each row the first that gives
-    one (module docstring), numbers and fixed words only; empty when none does."""
+    one (module docstring), numbers and fixed words only; and, with further objects, each one's own under
+    ``FURTHER_EVIDENCE`` (``_further_evidence``); empty when none does."""
     inputs = _mapping(preparation.get("authoring_inputs"))
     configuration = _mapping(inputs.get("configuration"))
     stated = owner_stated_weight_kg(_mapping(_mapping(configuration.get("construction_constraints"))
@@ -181,12 +188,54 @@ def evidence(preparation: Mapping[str, Any], capture_root: Path) -> dict[str, An
                  if weight.get("status") == "estimated" and weight.get("basis") == PHYSICS else None),
             _row(VIDEO_ESTIMATE, "video_size_prior", _mapping(physics.get("bounds")).get("mass_kg")
                  if physics.get("basis") == "estimated" else None)]
+    band_of_sizes = _row(VIDEO_ESTIMATE, "video_scale_band", [1 - error, 1 / (1 - error)]
+                         if error is not None and 0 <= error < 1 else None)
     size = [_planned(row, "size_m", True), _planned(row, "size_m", False),
-            _row(VIDEO_ESTIMATE, "video_scale_band", [1 - error, 1 / (1 - error)]
-                 if error is not None and 0 <= error < 1 and inputs.get("dimension_authority") == "estimated" else None)]
-    found = {key: next(item for item in rows if item is not None)
-             for key, rows in (("scale", size), ("mass_kg", mass)) if any(item is not None for item in rows)}
-    return {"variation_evidence": {EVIDENCE_PART: found}} if found else {}
+            band_of_sizes if inputs.get("dimension_authority") == "estimated" else None]
+    found = _first({"scale": size, "mass_kg": mass})
+    further = _further_evidence(preparation, Path(capture_root), band_of_sizes)
+    told = {**({EVIDENCE_PART: found} if found else {}), **({FURTHER_EVIDENCE: further} if further else {})}
+    return {"variation_evidence": told} if told else {}
+
+
+def _first(rows: Mapping[str, Sequence[Mapping[str, Any] | None]]) -> dict[str, Any]:
+    """Each quantity's first row that gives one."""
+    return {key: next(item for item in found if item is not None)
+            for key, found in rows.items() if any(item is not None for item in found)}
+
+
+def _further_evidence(preparation: Mapping[str, Any], capture_root: Path,
+                      band_of_sizes: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Each further object's own evidence, by its identity: its build plan row's size or mass (the site's words, else
+    the plan's estimate), else the mass prior from its own size in the video its file was authored with (its receipt's
+    ``physics_bounds``, ``website_task_preparation.screen_physics``); for size, the scale band of the video's sizes,
+    since its size is always the video's estimate. Only those with any."""
+    record = _mapping(preparation.get("further_objects"))
+    found = []
+    for item in record.get("objects") or []:
+        if not isinstance(item, Mapping):
+            continue
+        row = _plan_row(capture_root, item.get("target_id"))
+        prior = _mapping(_mapping(item.get("asset_receipt")).get("physics_bounds")).get("mass_kg")
+        told = _first({"scale": [_planned(row, "size_m", True), _planned(row, "size_m", False), band_of_sizes],
+                       "mass_kg": [_planned(row, "mass_kg", True), _planned(row, "mass_kg", False),
+                                   _row(VIDEO_ESTIMATE, "video_size_prior", prior)]})
+        identity = library_notes.identity(item)
+        if told:
+            found.append({"runtime_asset_id": identity["runtime_asset_id"], "asset_sha256": identity["asset_sha256"],
+                          **told})
+    return found
+
+
+def _told(source: Mapping[str, Any], part: str) -> Mapping[str, Any]:
+    """The evidence for one part: the job's object's by its prim, a further object's by the identity it ships as."""
+    told = _mapping(source.get("variation_evidence"))
+    if part == EVIDENCE_PART:
+        return _mapping(told.get(part))
+    shipped_as = library_notes.further_prims(source).get(part)
+    row = next((row for row in told.get(FURTHER_EVIDENCE) or [] if isinstance(row, Mapping) and shipped_as
+                and library_notes.matches(row, shipped_as)), {})
+    return {key: row[key] for key in QUANTITIES if key in row}
 
 
 def rights_stop(source: Mapping[str, Any]) -> str | None:
@@ -445,7 +494,7 @@ def write(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -
     part it places, and returns ``{"variations": summary}`` for the README (``readme_lines``); empty for a package
     without the job's object. Never raises for a fault of its own: the package ships without them, logged."""
     files = source.get("files") or {}
-    # The job's object and each further object of it (``job_object``: default bands, ``EVIDENCE_PART`` is the first's).
+    # The job's object and each further object of it (``job_object``), each with its own evidence (``_told``).
     parts = [prim for prim in placed if _mapping(files.get(prim)).get("role") in ("task_object", "job_object")]
     if not parts or source.get("room") is not None:
         return {}
@@ -458,18 +507,17 @@ def write(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -
         from pxr import Usd
         stage = Usd.Stage.OpenMasked(str(staging / "scene.usda"),
                                      Usd.StagePopulationMask([f"/World/{part}" for part in parts]))
-        told = _mapping(source.get("variation_evidence"))
         objects, rows = [], []
         for part in parts:
             target = _inspect(stage, part, source["axis"], files[part]["placement"].get("scale"))
-            ranges, not_varied = _ranges(target, _mapping(told.get(part)))
+            ranges, not_varied = _ranges(target, _told(source, part))
             if not ranges:
                 objects.append({"part": f"/World/{part}", "varied": False, "reason": "nothing_to_vary",
                                 "not_varied": not_varied})
                 continue
             # Seeded only by what the package revision already covers (the part, its file and its evidence), so one
             # revision always holds the same samples (a review of PR #3752: the plan's digest is not in it).
-            evidence = json.dumps(_mapping(told.get(part)), sort_keys=True, separators=(",", ":"))
+            evidence = json.dumps(_told(source, part), sort_keys=True, separators=(",", ":"))
             samples = _samples(ranges, f"{part}|{files[part]['sha256']}|{evidence}")
             rows.append({"part": part, "target": target, "samples": samples})
             objects.append({"part": f"/World/{part}", "varied": True,
@@ -542,6 +590,7 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     return lines
 
 
-__all__ = ["ADAPTATION_ALLOWED", "BASES", "DEFAULT", "DEFAULT_BANDS", "EVIDENCE_PART", "GENERATOR", "HEADING",
+__all__ = ["ADAPTATION_ALLOWED", "BASES", "DEFAULT", "DEFAULT_BANDS", "EVIDENCE_PART", "FURTHER_EVIDENCE", "GENERATOR",
+           "HEADING",
            "LAYER_FILE", "NOMINAL", "NOT_MEASUREMENTS", "SAMPLES", "SIDECAR_FILE", "SITE_ANSWER", "VARIANT_SET",
            "VIDEO_ESTIMATE", "evidence", "readme_lines", "rights_stop", "write"]
