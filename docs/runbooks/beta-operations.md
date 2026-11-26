@@ -53,7 +53,7 @@ at once. A stall that continues posts again each hour.
 | `team_scene_packet_stalled` | A team scene packet request waited in `pending/` or `processing/`, or stayed `blocked` (`status: retry_overdue` when its timed retry fell due and it is still blocked). | 8 h | Read the request's `team-scene-packets/status/<key>.json` and `blueprint-team-scene-packet.service`'s journal. |
 | `rigid_probe_stalled` | A rigid robot-free probe entry stayed in `pending/` and its latest attempt recorded nothing new, or a retired staging refusal's timed retry is overdue (`status: retry_overdue`). | 8 h | Read the latest `rigid-robot-free-probes/jobs/<key>-*/attempts/<NN>/rigid_robot_free_probe_ingest.json` (`status` in the page is its `state`) and the runner's journal. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
-| `control_plane_backup_stale` | No complete control-plane state backup for too long (`status: never_completed`, or the last one's age). | 2 h since the newest complete backup | `door status` for a hold on `blueprint-control-plane-state-backup.timer` (`door release-hold` it if forgotten), `door journal blueprint-control-plane-state-backup.service -n 200` for the failure, then `door unit start blueprint-control-plane-state-backup.timer`. Backup and rebuild: the last section of this file. |
+| `control_plane_backup_stale` | No complete control-plane state backup for too long (`status: never_completed`, or the last one's age). | 3 h since the newest complete backup | `door status` for a hold on `blueprint-control-plane-state-backup.timer` (`door release-hold` it if forgotten), `door journal blueprint-control-plane-state-backup.service -n 200` for the failure, then `door unit start blueprint-control-plane-state-backup.timer`. Backup and rebuild: the last section of this file. |
 | `control_plane_backup_not_configured` (warn, not a page) | No state backup has ever run on this host: its ledger does not exist. | Every capacity tick until one runs | The backup unit is skipped on a release without the owner's public key (`config/control_plane_state_backup_recipient.v1.json`) or a host without the artifact store's bucket file (`door journal blueprint-control-plane-state-backup.service` says `unmet condition check`). Deploy `main`; nothing is installed by hand. |
 | `website_preparation_blueprint_fault` (pages once) | A website preparation stopped on a fault in Blueprint's own code, not the site's input (`preparation_fault_alert.py`). | once per fault | Fix the cause in a release. The retry lane runs the job once more in its window's last two hours ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §8), so the fix must be live before then. |
 | `website_atlas_look_draft_final` (pages once) | A job's refined splat kept failing until its window ended, so its look is the draft for good (`preparation_fault_alert.py`). | once per job | Nothing more can be bought for that job ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §9). Read why the refined splat failed (the job's `last_error` and its splat attempts under `pipeline/atlas/`) and fix that cause for later jobs. |
@@ -1231,7 +1231,7 @@ deploy before you turn it on.
 
 ## Control-plane state backup and host rebuild
 
-What is backed up, every 15 minutes (`blueprint-control-plane-state-backup.timer`,
+What is backed up, every hour (`blueprint-control-plane-state-backup.timer`,
 `control_plane_state_backup.ALLOWLIST`): ledgers, money records, receipts, consents,
 standing approvals, job queues (their JSON records), `/etc/blueprint` without
 `provider-secrets/`, `credentials/` and `control-plane-backup/`, and each site's
@@ -1254,7 +1254,7 @@ names every skipped root and why, and counts what a size bound left out.
 - Kept: seven days. The newest complete generation is always kept.
 - The unit is skipped only on a release without the public key or a host
   without the bucket's files. Once a backup has completed, the stall alarm pages
-  `control_plane_backup_stale` when none completes for two hours, even if the
+  `control_plane_backup_stale` when none completes for three hours, even if the
   unit never runs (a forgotten door hold, a dead timer).
 - To change the key, replace `public_key_pem` and `fingerprint` together in a
   reviewed commit and deploy. Later generations are sealed to the new key.

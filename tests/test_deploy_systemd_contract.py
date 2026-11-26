@@ -506,7 +506,7 @@ BATCH_SLICE_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-scene-stage-maintenance.service",
     "blueprint-task-evaluation-episode-compilation.service",
-    # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
+    # Not a job mover, but bulk reads and uploads every hour: bounded with them so it never starves the host.
     "blueprint-control-plane-state-backup.service",
 )
 #: Every other service stays outside the slice, for the reason given: it must keep running, or keep money

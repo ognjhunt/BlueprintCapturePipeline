@@ -2,11 +2,13 @@
 Wants=blueprint-operator-door-hold-sweep.service
 After=blueprint-operator-door-hold-sweep.service
 ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-control-plane-state-backup.timer.json
-Description=Back up the control plane's state every 15 minutes
+Description=Back up the control plane's state every hour
 
 [Timer]
 OnBootSec=10min
-OnUnitInactiveSec=15min
+# Hourly since the first run measured the state at over 3 GB (2026-11-26): each run reads and uploads all of
+# it, so the cadence is what the host's CPU, its outbound transfer and the bucket pay for.
+OnUnitInactiveSec=1h
 RandomizedDelaySec=1min
 Persistent=true
 Unit=blueprint-control-plane-state-backup.service
