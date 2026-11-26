@@ -15,7 +15,9 @@ those into objects of the job's scene, beside the scored one:
   own masks) and the same support snap (it rests on whatever surface is under it in the scan), authored as free
   supplied geometry: its library model when that model is sealed, fetched, still allowed and credited, else the plan's
   parametric shape to fall back on; or the plan's parametric shape that is not a can. Each authored asset passes a
-  static check (``static_check``). The intake request names each one placed (``task.additional_objects``).
+  static check (``static_check``) and is seated by its own file's lowest point on that surface (``seat``): a model
+  taller or shorter than the estimate, within the tolerance, neither sinks into it nor floats. The intake request
+  names each one placed (``task.additional_objects``).
 - ``compose``: the further objects the intake request took (``usable_additional_objects``, never the raw field), each
   with its own replacement id and compose-back record (``website_preparation_request``), as the preparation's
   ``further_objects`` record. Each gets the prim ``/World/Object_02`` onward in the order composed, the runtime name
@@ -309,6 +311,25 @@ def static_check(path: Path, *, dimensions_m: Sequence[float], tolerance: float)
     return None
 
 
+def seat(asset_bounds: Mapping[str, Sequence[float]], *, estimated: tuple[Sequence[float], Sequence[float]],
+         runtime_to_sim: Any) -> dict[str, Any]:
+    """Where an authored further object stands (simulator frame, Z up, metres): its file's origin over the middle of
+    its estimated footprint, and its file's own lowest point (``asset_bounds``, its receipt's bounds about that origin)
+    on the support the estimate was snapped to, the estimate's bottom. So a library model inside the size tolerance
+    but taller or shorter than the video's estimate neither sinks into the surface nor floats above it (Codex review of
+    #3755). ``position``: the origin, the scene's pose; ``bounds``: the file's box there; ``runtime``: that box about
+    the origin in runtime units, whose centre is the compose-back record's position."""
+    low, high = [float(v) for v in asset_bounds["minimum"]], [float(v) for v in asset_bounds["maximum"]]
+    position = [(float(estimated[0][i]) + float(estimated[1][i])) / 2 for i in range(2)] + [
+        float(estimated[0][2]) - low[2]]
+    half = [(high[i] - low[i]) / 2 for i in range(3)]
+    runtime = _box([position[i] - half[i] for i in range(3)], [position[i] + half[i] for i in range(3)],
+                   np.linalg.inv(np.asarray(runtime_to_sim, dtype=float)))
+    return {"position": position, "bounds": ([position[i] + low[i] for i in range(3)],
+                                             [position[i] + high[i] for i in range(3)]),
+            "runtime": runtime, "asset_bottom_m": low[2]}
+
+
 def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Sequence[Mapping[str, Any]],
           targets: Mapping[str, Mapping[str, Any]], frames: Sequence[Mapping[str, Any]], matrix: Any,
           runtime_to_sim: Any, residual: float | None, collider: Any, up: int, up_sign: int, mpu: float,
@@ -373,14 +394,21 @@ def place(further_objects: Sequence[Mapping[str, Any]] | None, *, entries: Seque
         failed = static_check(authored["path"], dimensions_m=dimensions, tolerance=tolerance)
         if failed is not None:
             return None, f"{STATIC_CHECK_FAILED}:{failed}"
-        boxes.append((f"further_object_rank_{rank}", (sim_min, sim_max)))
+        seated = seat(authored["receipt"]["bounds_m"], estimated=(sim_min, sim_max), runtime_to_sim=runtime_to_sim)
+        met = next((name for name, box in boxes if _overlap(seated["bounds"], box)), None)
+        if met is not None:  # the file as authored, which may be larger than the estimate, meets another box
+            return None, f"{OVERLAPS}:{met}"
+        boxes.append((f"further_object_rank_{rank}", seated["bounds"]))
         entry = by_target.get(target_id) or {"target_id": target_id,
                                               **({"semantic_label": target["semantic_label"]}
                                                  if isinstance(target.get("semantic_label"), str) else {})}
         return {"rank": rank, "target_id": target_id, "entry": dict(entry), "authored": authored,
-                "runtime_min": low, "runtime_max": high, "sim_min": sim_min, "sim_max": sim_max, "snap": snap,
+                "runtime_min": seated["runtime"][0], "runtime_max": seated["runtime"][1],
+                "sim_min": seated["bounds"][0], "sim_max": seated["bounds"][1], "position": seated["position"],
+                "estimated": {"minimum": sim_min, "maximum": sim_max}, "snap": snap,
                 "support": {"top_runtime_units": float(support["top_runtime_units"]), "basis": basis,
-                            "snap_m": snap * mpu, "snap_basis": "estimate"}}, None
+                            "snap_m": snap * mpu, "snap_basis": "estimate",
+                            "seated_on": "authored_asset_bottom", "asset_bottom_m": seated["asset_bottom_m"]}}, None
 
     for row in sorted(rows, key=lambda item: item["rank"]):
         try:
@@ -426,7 +454,6 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
         backs[item["target_id"]] = back
         authored = item["authored"]
         receipt = authored["receipt"]
-        centre = [(item["sim_min"][i] + item["sim_max"][i]) / 2 for i in range(3)]
         objects.append({
             "rank": item["rank"], "target_id": item["target_id"], "prim_path": f"/World/Object_{slot:02d}",
             "runtime_name": f"{ROLE}_{slot:02d}", "replacement_asset_id": replacement_id(task_context, item["rank"]),
@@ -437,8 +464,10 @@ def compose(task: Mapping[str, Any], placed: Mapping[str, Any], *, task_context:
             "asset": {"relative_path": Path(authored["path"]).resolve().relative_to(Path(output_root).resolve()).as_posix(),
                       "sha256": "sha256:" + receipt["asset"]["sha256"], "size_bytes": receipt["asset"]["size_bytes"]},
             "asset_receipt": receipt, "static_check": "passed",
+            # Its file's box where it stands, seated on its support (``seat``); the video's estimate beside it.
             "bounds_world_m": {"minimum": item["sim_min"], "maximum": item["sim_max"]},
-            "pose_world": {"position_world_m": centre, "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+            "estimated_bounds_world_m": item["estimated"],
+            "pose_world": {"position_world_m": item["position"], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
             "support": item["support"], "compose_back": back})
     left.sort(key=lambda row: (row["rank"] if isinstance(row["rank"], int) else 99, row["target_id"]))
     record = {"schema_version": SCHEMA_VERSION, "revision": REVISION, "scored_object": SCORED_PRIM,
@@ -542,4 +571,4 @@ def half_record(further: Mapping[str, Any] | None, rows_written: Sequence[Mappin
 __all__ = ["DIRECTORY", "LEFT_IN_SCAN", "LEFT_OUT", "NEEDS_ARTISAN", "NOT_TAKEN", "OVERLAPS", "ROLE", "SCHEMA_VERSION",
            "SCORED_PRIM", "STATIC_CHECK_FAILED", "author", "author_library_asset", "compose", "for_revision",
            "further_inputs", "half_record", "place", "refused_rows_dropped", "rows", "runtime_id",
-           "scored_entries", "static_check"]
+           "scored_entries", "seat", "static_check"]

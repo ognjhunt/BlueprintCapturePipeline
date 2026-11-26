@@ -205,8 +205,9 @@ def test_two_free_further_objects_are_authored_placed_where_filmed_and_composed_
     for row in (carton, mug):
         low, high = row["bounds_world_m"]["minimum"], row["bounds_world_m"]["maximum"]
         assert low[2] == pytest.approx(table, abs=1e-6) and row["support"]["basis"].startswith("support_under")
-        assert row["pose_world"] == {"position_world_m": [(a + b) / 2 for a, b in zip(low, high)],
-                                     "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+        assert row["pose_world"]["orientation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+        assert row["pose_world"]["position_world_m"] == pytest.approx([(a + b) / 2 for a, b in zip(low, high)],
+                                                                      abs=1e-6)
         assert high[0] < subject["aabb_min_xyz"][0]  # filmed left of the cup, so placed left of it
     assert carton["bounds_world_m"]["maximum"][0] < mug["bounds_world_m"]["minimum"][0]
     # The intake request names both, ranked; composition read them from it.
@@ -235,6 +236,59 @@ def test_a_library_model_whose_proportions_miss_falls_back_to_its_shape_and_says
     assert mug["source"] == "parametric" and mug["parametric_design"]["shape"] == "carton"
     assert mug["library_not_used"].startswith("library_aspect_mismatch")
 
+
+
+def _seated_bottom(out: Path, row: dict) -> tuple[float, float]:
+    """Where the further object's file, placed at its pose, has its lowest point, and how tall the file is: read from
+    the file itself, never from the record's own bounds."""
+    from pxr import Usd, UsdGeom
+    stage = Usd.Stage.Open(str(out / row["asset"]["relative_path"]))
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.guide])
+    box = cache.ComputeWorldBound(stage.GetDefaultPrim()).ComputeAlignedRange()
+    return row["pose_world"]["position_world_m"][2] + box.GetMin()[2], box.GetMax()[2] - box.GetMin()[2]
+
+
+@pytest.mark.parametrize("factor", [1.1, 0.9], ids=["taller", "shorter"])
+def test_a_library_model_taller_or_shorter_than_the_estimate_sits_exactly_on_its_support(tmp_path, factor):
+    """Codex review of #3755: a library model used as it is, within the size tolerance but not the estimate's height,
+    was placed by the estimated box's middle, so a taller one sank into the table and a shorter one floated above it.
+    It is seated by its own file's lowest point now, and its compose-back record names the same place."""
+    value = _compile(tmp_path / "job", ["mug-1"], [_plan_row("mug-1")], size=(0.16, 0.034, 0.22 * factor))
+    assert value["status"] == "intake_ready", value["blockers"]
+    (mug,) = value["further_objects"]["objects"]
+    assert mug["source"] == "library" and mug["library_design"]["sizing"]["status"] == "as_is"
+    table = value["subject"]["aabb_min_xyz"][2]
+    bottom, height = _seated_bottom(tmp_path / "job" / "out", mug)
+    assert bottom == pytest.approx(table, abs=further.FLOAT_SLACK_M)  # on the table: neither sunk nor floating
+    estimated = mug["estimated_bounds_world_m"]
+    seen = estimated["maximum"][2] - estimated["minimum"][2]
+    assert height == pytest.approx(0.22 * factor, abs=1e-6) and abs(height - seen) > 0.01  # not the estimate's height
+    assert mug["bounds_world_m"]["minimum"][2] == pytest.approx(table, abs=1e-9)
+    assert mug["bounds_world_m"]["maximum"][2] - mug["bounds_world_m"]["minimum"][2] == pytest.approx(height, abs=1e-6)
+    assert mug["support"]["seated_on"] == "authored_asset_bottom"
+    # The footprint's middle is where the video shows it, as before.
+    assert mug["pose_world"]["position_world_m"][:2] == pytest.approx(
+        [(a + b) / 2 for a, b in zip(estimated["minimum"][:2], estimated["maximum"][:2])], abs=1e-9)
+    # The compose-back record and the intake request say the same place and box.
+    to_sim = np.asarray(value["coordinate_frame"]["runtime_to_simulator"], dtype=float)
+    back = to_sim @ [*mug["compose_back"]["pose_world"]["position"], 1.0]
+    assert back[:3].tolist() == pytest.approx(mug["pose_world"]["position_world_m"], abs=1e-9)
+    (requested,) = value["intake_request"]["task"]["additional_objects"]
+    assert requested["subject"]["aabb_min_xyz"] == mug["bounds_world_m"]["minimum"]
+    assert requested["subject"]["aabb_max_xyz"] == mug["bounds_world_m"]["maximum"]
+
+
+def test_a_seated_object_keeps_its_middle_and_puts_its_own_lowest_point_on_the_support():
+    """``seat`` alone: an asset whose origin is not its middle is seated by its own lowest point, in both up axes."""
+    estimated = ([1.0, 2.0, 0.5], [1.2, 2.4, 0.7])
+    asset = {"minimum": [-0.1, -0.2, -0.03], "maximum": [0.1, 0.2, 0.19]}  # 22 cm tall, origin 3 cm above its bottom
+    for to_sim in (np.diag([2.0, 2.0, 2.0, 1.0]),
+                   np.array([[2.0, 0, 0, 0], [0, 0, -2.0, 0], [0, 2.0, 0, 0], [0, 0, 0, 1.0]])):
+        seated = further.seat(asset, estimated=estimated, runtime_to_sim=to_sim)
+        assert seated["position"] == pytest.approx([1.1, 2.2, 0.53])
+        assert seated["bounds"][0][2] == pytest.approx(0.5) and seated["bounds"][1][2] == pytest.approx(0.72)
+        centre = [(a + b) / 2 for a, b in zip(*seated["runtime"])]
+        assert (to_sim @ [*centre, 1.0])[:3].tolist() == pytest.approx(seated["position"])
 
 def test_without_further_objects_a_several_object_job_is_handled_as_before(tmp_path):
     arguments = _job(tmp_path / "job", ["carton-1"])
