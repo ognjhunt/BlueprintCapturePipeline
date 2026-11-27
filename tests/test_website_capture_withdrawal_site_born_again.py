@@ -466,3 +466,74 @@ def test_a_run_offloaded_while_the_withdrawal_waits_puts_it_back_to_unresolved_a
     assert state["status"] == "unresolved" and harness.applies == [], state
     assert state["unresolved_reasons"] == {UNDETERMINED: 1}
     assert harness.site_files() > 0
+
+
+# --- second review (2026-11-27): the workspace archive of a receipt moved aside, and a retired tombstone -------
+
+
+def test_the_workspace_archive_of_a_retired_site_is_in_the_plan_under_the_receipts_own_name(tmp_path):
+    world = _first_life_then_retired(tmp_path)
+    archive = json.loads(world["receipt"].read_text())["archive"]["uri"]
+    _withdraw(world["capture"])
+    plan = _plan(world["capture"], world["launches"], tmp_path)
+    assert plan["scene_workspace"]["receipt"] == str(world["receipt"])
+    assert plan["scene_workspace"]["archive_uri"] == archive
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "REVIEW FINDING, older than commit 4b2652b: _scene_workspace reads the workspace archive only from "
+    "<site>.retired.v1.json. Once that receipt is moved aside (a restore, or a workspace born again) nothing in "
+    "the plan names the archive it wrote to the artifact store, so an apply leaves it and no receipt lists it. "
+    "With any pointer-only run on the host the narrowed rule keeps such a plan unresolved; that is by chance, "
+    "not by design. Remove this marker with the fix."))
+@pytest.mark.parametrize("how", ["restored_by_the_operator", "born_again"])
+def test_the_workspace_archive_of_a_receipt_moved_aside_is_in_the_plan(tmp_path, how):
+    world = _first_life_then_retired(tmp_path)
+    capture, launches = world["capture"], world["launches"]
+    archive = json.loads(world["receipt"].read_text())["archive"]["uri"]
+    # No pointer-only run stands in the way: on such a host the plan below resolves and the apply runs.
+    (launches / f"{SITE_RUN}{offload.POINTER_SUFFIX}").unlink()
+    if how == "restored_by_the_operator":
+        retention.restore_scene_workspace(
+            receipt_path=world["receipt"], destination=capture.parents[1], cloud=world["cloud"],
+            materializer=functools.partial(store.materialize_configured_scene_artifact, client=world["client"],
+                                           bucket=ARTIFACT_BUCKET))
+    else:
+        _deliver(tmp_path, world["cloud"], _renewed(), ended=False, video=b"the site's second walkthrough video")
+        plan = retention.plan_scene_workspace_retirement(
+            context=world["context"], bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR,
+            cloud=world["cloud"], process_checker=lambda _path: False)
+        result = retention.apply_scene_workspace_retirement(
+            plan, context=world["context"], ack=retention.RETIRE_ACK, cloud=world["cloud"],
+            now=plan["observed_at_epoch"], stream_publisher=lambda **_: pytest.fail("nothing is archived here"),
+            process_checker=lambda _path: False)
+        assert result["reason"] == "receipt_workspace_mismatch", result
+    assert not world["receipt"].exists()
+    assert [path.name for path in capture.parents[2].glob(f".{SCENE}{retention.RETIRED_SUFFIX}.*")]
+    # The archive is still in the artifact store: neither a restore nor the move aside deletes it.
+    assert any(archive.endswith(key) for _bucket, key in world["client"].objects)
+    _withdraw(capture)
+    plan = _plan(capture, launches, tmp_path)
+    # Some part of the plan must name it: as an object to delete, or as a row that stops the apply.
+    assert archive in json.dumps(plan), (plan["scene_workspace"], plan["unresolved"])
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "REVIEW FINDING, older than commit 4b2652b: the retention code does not know the withdrawal journal. Once "
+    "nothing under a withdrawn site's workspace has changed for 48 hours (the withdrawal pass rewrites its state "
+    "there on each attempt, so only while that pass is not handling the site) it plans the workspace for "
+    "retirement, tombstone included; after the apply the automatic pass finds no withdrawal for the site at all. "
+    "Remove this marker with the fix."))
+def test_retention_keeps_the_workspace_of_a_withdrawn_site_so_its_tombstone_stays_where_the_pass_looks(tmp_path):
+    cloud = FakeCloud()
+    capture = _deliver(tmp_path, cloud, _payload(), ended=False, video=b"the site's walkthrough video")
+    _withdraw(capture)
+    sites, problems = automatic.discover_withdrawals([tmp_path / "pubsub-handoffs"])
+    assert [site.name for site in sites] == [SCENE] and not problems
+    # The reclaim timer's own context (timer_context_factory), three days after anything last touched the site.
+    context = _context(tmp_path, keep_shared_workspaces=True, retire_internal_test_jobs=True)
+    plan = retention.plan_scene_workspace_retirement(
+        context=context, bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR, cloud=cloud,
+        process_checker=lambda _path: False)
+    assert "website_withdrawal/tombstone.json" not in [row["relative_path"] for row in plan["archive"]], plan["status"]
+    assert plan["status"] == "retained", plan["status"]
