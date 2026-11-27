@@ -57,7 +57,7 @@ Nice=19
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 IOWeight=10
-TimeoutStartSec=20min
+TimeoutStartSec=30min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/control-plane-backup

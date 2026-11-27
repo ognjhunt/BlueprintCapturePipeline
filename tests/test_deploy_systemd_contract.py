@@ -177,7 +177,7 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert writable == ["/var/lib/blueprint/pipeline-control-plane/control-plane-backup",
                                 "/var/lib/blueprint/pubsub-handoffs"]
             for control in ("TasksMax=32", "MemoryMax=512M", "CPUQuota=50%", "Nice=19", "IOSchedulingPriority=7",
-                            "TimeoutStartSec=20min", "OnFailure=" + NOTIFIER_ON_FAILURE, "Slice=" + BATCH_SLICE):
+                            "TimeoutStartSec=30min", "OnFailure=" + NOTIFIER_ON_FAILURE, "Slice=" + BATCH_SLICE):
                 assert control in text, (unit.name, control)
             assert "-m blueprint_pipeline.control_plane_state_backup run'" in text
             # Nothing is installed by hand for a backup: it runs once the release carries the owner's public

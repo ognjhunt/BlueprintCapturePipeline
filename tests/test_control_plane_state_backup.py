@@ -199,6 +199,27 @@ def test_the_billing_reconcilers_evidence_trail_is_left_out_and_counted_and_the_
     assert root.exclude == ("billing-audit", "metered-call-events") and "not backed up" in root.reason
 
 
+def test_the_sam_queues_records_are_kept_and_the_watchdogs_sweep_receipts_beside_them_are_left_out(host, tmp_path):
+    queue = f"{CP}/sam31-preparation-executions"
+    _write(host, f"{queue}/completed/sam31-e41bd19c.json", b'{"status": "completed"}')
+    _write(host, f"{queue}/results/sam31-e41bd19c.json", b'{"result": 1}')
+    for index in range(40):
+        _write(host, f"{queue}/watchdog-cgroup-cleanup/dispatcher-cgroup-cleanup-{index}.json", b'{"swept": 0}')
+    store = FakeStore()
+    report = _run(host, store, tmp_path)
+    assert report["status"] == "complete"
+    counts = report["roots"][f"/{queue}"]
+    # The whole folder is one exclusion, however many receipts it holds.
+    assert counts["files"] == 2 and counts["excluded"] == {"excluded_by_allowlist": 1}
+    drill = tmp_path / "drill"
+    backup.restore(store=store, key=KEY, fs_root=drill)
+    assert (drill / queue / "completed/sam31-e41bd19c.json").read_bytes() == b'{"status": "completed"}'
+    assert not (drill / queue / "watchdog-cgroup-cleanup").exists()
+    # Listed once, as a records-only queue.
+    listed = [item for item in backup.ALLOWLIST if item.path == f"/{queue}"]
+    assert len(listed) == 1 and listed[0].records_only and listed[0].exclude == ("watchdog-cgroup-cleanup",)
+
+
 def test_no_allowlisted_root_is_site_data():
     for root in backup.ALLOWLIST:
         if "website_withdrawal" in root.path or root.path.endswith(".retired.v1.json"):
