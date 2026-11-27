@@ -24,7 +24,9 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   more than ``PREDATES_SITE_MARGIN_SECONDS`` before the site's earliest record
   there (``_site_earliest_record``) cannot hold the site's data: it is kept,
   listed with both times in ``offloaded_runs_older_than_site``, and is not
-  undetermined;
+  undetermined. The first plan that judges one writes the site's earliest
+  record once in the withdrawal journal (``site_earliest_record.json``), so a
+  plan deletes nothing but is not read-only;
 - every B2 object those pointers and the bound runs' registered remote result
   artifacts name, with each object version and delete marker listed through
   the existing artifact store client, every archived Atlas preview of the
@@ -383,9 +385,11 @@ def _pointer_uri(pointer: Mapping[str, Any]) -> str | None:
     return str(uri) if uri else None
 
 
-#: How long before the site's earliest record on the host an offloaded run must have left it to be cleared. It
-#: covers the staging a handoff does before the listener's first lease claim (one listener pass, whose unit
-#: stops it at six hours) and any step of the host clock between the two writes; equal falls on the safe side.
+#: How long before the site's earliest record on the host an offloaded run must have left it to be cleared. A
+#: pointer's ``offloaded_at_epoch`` is the start of the clean-up tick that archived the run (the storage clean-up
+#: passes one clock per tick), so its archive can hold files written until the tick ended; the clean-up unit
+#: stops a tick at 3 hours (``TimeoutStartSec=3h``), and the margin must stay longer than that. Equal falls on the
+#: safe side.
 PREDATES_SITE_MARGIN_SECONDS = 6 * 3600
 PREDATES_SITE_REASON = "website_withdrawal_deletion_offloaded_run_predates_site"
 _JOB_LEDGER = ("pipeline_job_ledger.json", "pipeline_job_ledger.v1")
@@ -505,7 +509,8 @@ def _offloaded_before(unit: Mapping[str, Any], site_epoch: float | None) -> floa
     """When a pointer-only run left the host, if that was more than the margin before ``site_epoch``; else None.
 
     Only an evidence offload pointer counts: its writer archives the whole run directory, seals the pointer
-    with the time it did so and removes the directory, so the archive holds nothing written after that time.
+    and removes the directory. Its time is the start of the clean-up tick, so the archive can hold files written
+    up to the tick's 3-hour limit later (``PREDATES_SITE_MARGIN_SECONDS``).
     Every pointer of the run must be one, sealed (``_sealed_pointer`` has checked), ``offloaded``, with a
     finite positive time; the run has no directory and no leftover beside it.
     """
@@ -755,7 +760,11 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              provider_deleters: Mapping[str, Any] | None = None,
                              run_scan_cache: Path | None = None, scan_deadline: float | None = None
                              ) -> dict[str, Any]:
-    """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one).
+    """Resolve every Pipeline-controlled copy of the site; deletes nothing (the GCS plan is the existing one).
+
+    A plan is not read-only: the first plan that judges an offloaded run by the site's earliest record writes
+    ``site_earliest_record.json`` once in the site's withdrawal journal (``_site_record``), and with
+    ``run_scan_cache`` it writes that cache.
 
     ``run_scan_cache`` keeps what each run's records name between plans
     (``website_withdrawal_run_scan_cache``), so a plan reads only the runs that changed; the plan

@@ -978,26 +978,44 @@ about 14 hours before the withdrawn site's first record there.
 
 Since 2026-11-27 such a run is cleared when its sealed evidence-offload pointer
 (`<run>.offloaded.v1.json`, status `offloaded`) says it left the host more
-than 6 hours before the site's earliest record on the host. The offload writes
-that time when it archives the whole run directory, then removes the
-directory, so the archive holds nothing written later. The site's earliest
-record is the earlier of:
+than 6 hours before the site's earliest record on the host. The site's
+earliest record is the earlier of:
 
 - the handoff listener's `started_at` in each capture's
   `pipeline_job_ledger.json`, and the start of every attempt in its history.
   The listener writes it at its first lease claim and carries it forward;
 - the modification time of the site directory and of everything under it.
 
-The 6 hours cover the staging a handoff does before that first claim (one
-listener pass, stopped at 6 hours by its unit) and a step of the host clock.
-Equal times stay undetermined. The first plan that finds the record seals it in
+The pointer's `offloaded_at_epoch` is not the moment its run was archived. It
+is the start of the clean-up tick that archived it: the storage clean-up reads
+the clock once and passes that one time to every step of the tick
+(`control_plane_storage_gc.py`, `clock = lambda: observed_at`). A file written
+into a sealed run later in the same tick can be in the archive. A tick runs at
+most 3 hours: `TimeoutStartSec=3h` in
+`deploy/systemd/blueprint-control-plane-storage-gc.service` stops it there. So
+an archive holds nothing written more than 3 hours after its pointer's time.
+The 6-hour margin holds because it is longer than that limit. It leaves 3
+hours for anything of the site the host wrote before the site's earliest
+recorded time; that gap was not measured. Equal times stay undetermined.
+
+The first plan that finds the record seals it in
 `<site>/website_withdrawal/site_earliest_record.json`; the apply keeps the
-journal, so a plan after the apply still has it.
+journal, so a plan after the apply still has it. So a plan writes that one
+file; it is not read-only.
 
 A run stays undetermined when: its pointer is not sealed, not an evidence
 offload pointer, not `offloaded`, or has no usable time; it has a leftover
 beside it; it left less than 6 hours before the site; a capture has no readable
-ledger; or the scene workspace was retired. A pointer the service cannot read
+ledger; or the scene workspace was retired. A retirement is seen by its receipt
+`<site>.retired.v1.json`, by a receipt moved aside or a receipt temporary
+(`.<site>.retired.v1.json.*`), by a `.retiring-<site>-*` leftover, or by a job
+ledger row with `source: scene_retirement_receipt`. The moved-aside receipt,
+the temporary and the ledger row count since the review of 2026-11-27. The
+listener writes that row into a ledger it starts after a retirement that ended
+for lost authority. The retention code moves the receipt
+aside when a later delivery made a new workspace for the site, and a restore
+does the same. The new ledger then starts late, so the site's first life
+would have been missed. A pointer the service cannot read
 stays `website_withdrawal_deletion_record_unreadable`. Its file time is never
 used. The door could not open 74 pointers on 2026-11-27 (`open_failed`; the
 door reads as `blueprint`, like the unit). If the unit cannot read them either,
@@ -1014,6 +1032,41 @@ archive stay. The plan and the receipt list each one under
 `remaining` counts them (`offloaded_runs_older_than_site`). An object that a
 cleared run and one of the site's runs both name is still `unresolved`.
 
+What the rule does not do:
+
+- It clears only runs offloaded more than 6 hours before the site came. It
+  never clears a run offloaded after. The clean-up offloads a sealed run once
+  nothing in it has changed for 48 hours (the hot window,
+  `BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800` in the clean-up
+  unit), and a run with no terminal receipt after 3 days. It runs every hour.
+- So any run the clean-up offloads after the site's first record, whoever's it
+  is, makes that site's plan `unresolved` again if its pointer names no site.
+  Only reading that run's archive by hand settles it.
+- It does not read the capture's birth records.
+- The plan reads the workspace archive only from a receipt under its own name
+  (`<site>.retired.v1.json`). The archive a receipt moved aside names is not
+  in the plan; whether another part of the plan finds it was not checked.
+
+What the owner does around the first apply:
+
+1. The door could not open 74 pointer files on 2026-11-27. The door runs as
+   `blueprint`, the same user as the deletion unit. If the unit cannot read
+   them either, the plan stays `unresolved` until their owner and group are
+   corrected as root. Give each the owner and group of its run root.
+   `control_plane_evidence_offload._adopt_root_owner` does that for each new
+   pointer.
+2. Set `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in
+   `/etc/blueprint/pipeline-control-plane.env` before the first apply, with
+   Google Cloud Storage credentials the unit can use. Set afterwards, the
+   new plan also sees every run offloaded since the first apply, and is very
+   likely `unresolved`. The raw video in the bucket then stays.
+3. The first apply runs by itself on the first pass after the cool-off ends.
+   Read `<site>/website_withdrawal/automatic_deletion_plan.json` after the
+   first plan on the new release, before the cool-off ends. To stop the apply,
+   install a host approval file whose `expires_at` is in the past (above). If
+   the cool-off has already ended when the release lands, the first clean plan
+   applies in the same pass; install that file before the deploy to read first.
+
 ### Alerts
 
 The pass posts on the capacity alert route,
@@ -1025,7 +1078,7 @@ posting code. A new alert posts at once. The same alerts post again after
 |---|---|---|
 | `website_withdrawal_approval_invalid` | The approval file exists but does not validate, or has expired (`reason`). | Owner: fix or replace the file |
 | `website_withdrawal_deletion_unresolved` | A site was `unresolved` or waited on money for 72 h. | Read the plan's `unresolved` rows |
-| `website_withdrawal_deletion_failing` | A site failed 3 times in a row. | Read `last_error` and the journal |
+| `website_withdrawal_deletion_failing` | A site failed 3 times in a row. A clean plan whose apply fails counts as a failure (since 2026-11-27; before, the clean plan set the count back to 0, so an apply failing every pass never paged as failing). A failed pass keeps the time the site has been blocked. | Read `last_error` and the journal |
 | `website_withdrawal_deletion_overdue` | A withdrawal is 21 days old without a receipt and has no legal hold, whatever it waits on (the approval too). The promise is 30 days. | Find what it waits on in `door status` |
 | `website_withdrawal_scan_incomplete` | A site root could not be listed. | Read the journal |
 
