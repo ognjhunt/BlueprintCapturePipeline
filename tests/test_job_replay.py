@@ -157,6 +157,25 @@ def test_each_later_stage_runs_offline_the_handoff_and_the_company_package(tmp_p
         assert row["duration_seconds"] >= 0 and row["peak_rss_bytes"] > 0 and row["would_buy"] == []
 
 
+def test_keep_package_keeps_the_zip_the_package_stage_builds(tmp_path, monkeypatch):
+    """The door does not serve a package holding an object (``object.usdz`` is a nested archive), so a replay that
+    rebuilds the host's bytes keeps them to be checked (stress test, 2026-11-27). Without the flag nothing is kept."""
+    import hashlib
+
+    job = _room_job(tmp_path, monkeypatch)
+    kept_dir = tmp_path / "run"
+    kept_dir.mkdir()
+    monkeypatch.setattr(job_replay, "_RUN_DIR", kept_dir)
+    company = _stage(_in_place(job.capture, tmp_path / "first"), "company_simulation")
+    assert "kept" not in company["package"] and not (kept_dir / "package.zip").exists()
+    monkeypatch.setenv(job_replay.KEEP_PACKAGE_ENV, "1")
+    company = _stage(_in_place(job.capture, tmp_path / "second"), "company_simulation")
+    kept = Path(company["package"]["kept"])
+    assert kept == kept_dir / "package.zip"
+    assert "sha256:" + hashlib.sha256(kept.read_bytes()).hexdigest() == company["package"]["digest"]
+    assert not job_replay._credential_name(job_replay.KEEP_PACKAGE_ENV)  # it reaches the worker's environment
+
+
 def test_the_masks_substitution_steps_past_the_recomputation_with_the_hosts_own_masks(tmp_path, monkeypatch):
     from contextlib import ExitStack
 

@@ -47,6 +47,14 @@ never makes; for the company package, the upload after the build: `package` in t
 and members), `waiting` (an Atlas job that did not move, a package with no source yet) and `error`. A refusal lists
 `unpulled_before`: what the code looked for just before it and did not find.
 
+## `--keep-package`
+
+The door does not serve a package that holds an object: `object.usdz` is an archive inside the zip
+(`secret_content_refused:nested_compressed_member`). With `--keep-package` the package stage copies the zip it builds
+into its run folder as `package.zip` and the report names it (`package.kept`). When its digest is the one the host's
+`pipeline/company_simulation/company_simulation.json` records (`package.digest`), these are the bytes the host
+delivered, to open and check here.
+
 ## `--past <code>`
 
 Steps past a named stop, on the record. Where the step has a retained output the host made, that output stands in
