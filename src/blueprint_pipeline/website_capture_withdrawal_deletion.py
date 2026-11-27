@@ -10,7 +10,11 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
 ``plan`` (the default; deletes nothing) resolves, for one acknowledged withdrawal:
 
 - the scene directory (and ``.retiring-<scene>-*`` leftovers of a workspace
-  retirement) and the workspace retirement receipt with its B2 archive;
+  retirement) and the workspace retirement receipt with its B2 archive. A
+  receipt moved aside or a receipt temporary (``.<scene>.retired.v1.json.*``)
+  is not deleted and neither is the archive it names: each is an unresolved row
+  (``website_withdrawal_deletion_moved_aside_retirement_receipt``), so nothing
+  is applied until that archive has its own reviewed handling;
 - every run directory, offload pointer and residue pointer under the run roots
   (the ``evidence_cold`` roots and the intent-keyed scene preparation outputs by
   default) that names the site: its scene id or capture id, a scene intent whose
@@ -654,7 +658,23 @@ def _scene_workspace(site: Path, identity: Mapping[str, str], unresolved: list[d
         else:
             value["receipt"] = str(receipt_path)
             value["archive_uri"] = _pointer_uri(receipt)
+    # A retirement receipt moved aside (a restore, or a workspace born again) or a receipt temporary still names
+    # an archive of the site's workspace, and the plan does not delete it (that would need its own review). Until
+    # it does, each such file stops the apply, named, with the archive it names when it can be read.
+    for path in sorted(scenes.glob(f".{identity['scene_id']}.retired.v1.json.*")):
+        row: dict[str, Any] = {"path": str(path), "reason": MOVED_ASIDE_RETIREMENT_RECEIPT_REASON}
+        try:
+            moved = _json(path) if path.is_file() and not path.is_symlink() else {}
+            if moved.get("scene_id") == identity["scene_id"] and _pointer_uri(moved):
+                row["archive_uri"] = _pointer_uri(moved)
+        except (WithdrawalDeletionError, OSError, AttributeError, TypeError):
+            pass  # unreadable: the row still stops the apply
+        unresolved.append(row)
     return value
+
+
+#: Why a plan with a moved-aside or temporary workspace retirement receipt of the site is unresolved.
+MOVED_ASIDE_RETIREMENT_RECEIPT_REASON = "website_withdrawal_deletion_moved_aside_retirement_receipt"
 
 
 def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],

@@ -497,12 +497,11 @@ def test_the_workspace_archive_of_a_retired_site_is_in_the_plan_under_the_receip
     assert plan["scene_workspace"]["archive_uri"] == archive
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "REVIEW FINDING, older than commit 4b2652b: _scene_workspace reads the workspace archive only from "
-    "<site>.retired.v1.json. Once that receipt is moved aside (a restore, or a workspace born again) nothing in "
-    "the plan names the archive it wrote to the artifact store, so an apply leaves it and no receipt lists it. "
-    "With any pointer-only run on the host the narrowed rule keeps such a plan unresolved; that is by chance, "
-    "not by design. Remove this marker with the fix."))
+# STOP-GAP, 2026-11-27: the review asked that some part of the plan name this archive, "as an object to delete,
+# or as a row that stops the apply". The plan now does the second: one unresolved row per moved-aside or temporary
+# receipt (``website_withdrawal_deletion_moved_aside_retirement_receipt``), carrying the archive it names, so
+# nothing is applied and the 72-hour unresolved page names it. The full fix is still owed: the plan does not delete
+# that archive, and the withdrawal cannot finish until an owner-reviewed change makes it do so.
 @pytest.mark.parametrize("how", ["restored_by_the_operator", "born_again"])
 def test_the_workspace_archive_of_a_receipt_moved_aside_is_in_the_plan(tmp_path, how):
     world = _first_life_then_retired(tmp_path)
@@ -533,6 +532,28 @@ def test_the_workspace_archive_of_a_receipt_moved_aside_is_in_the_plan(tmp_path,
     plan = _plan(capture, launches, tmp_path)
     # Some part of the plan must name it: as an object to delete, or as a row that stops the apply.
     assert archive in json.dumps(plan), (plan["scene_workspace"], plan["unresolved"])
+    # Today it is a row that stops the apply (the stop-gap above), not an object to delete.
+    moved = [row for row in plan["unresolved"] if row["reason"] == deletion.MOVED_ASIDE_RETIREMENT_RECEIPT_REASON]
+    assert [Path(row["path"]).name for row in moved] == [
+        path.name for path in capture.parents[2].glob(f".{SCENE}{retention.RETIRED_SUFFIX}.*")]
+    assert moved[0]["archive_uri"] == archive
+    with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
+        deletion.apply_withdrawal_deletion(capture_root=capture, expected_plan_digest=plan["digest"],
+                                           authorize_complete_deletion=True, **_resolution(launches, tmp_path))
+    assert capture.is_dir() and any(archive.endswith(key) for _bucket, key in world["client"].objects)
+
+
+def test_an_unreadable_moved_aside_receipt_still_stops_the_apply(tmp_path):
+    world = _first_life_then_retired(tmp_path)
+    capture, launches = world["capture"], world["launches"]
+    (launches / f"{SITE_RUN}{offload.POINTER_SUFFIX}").unlink()
+    # The receipt is still under its own name; beside it, a torn temporary of a later receipt write.
+    torn = capture.parents[2] / f".{SCENE}{retention.RETIRED_SUFFIX}.4321.deadbeef.tmp"
+    torn.write_bytes(b'{"scene_id": "')
+    _withdraw(capture)
+    plan = _plan(capture, launches, tmp_path)
+    rows = [row for row in plan["unresolved"] if row["reason"] == deletion.MOVED_ASIDE_RETIREMENT_RECEIPT_REASON]
+    assert rows == [{"path": str(torn), "reason": deletion.MOVED_ASIDE_RETIREMENT_RECEIPT_REASON}]
 
 
 def test_retention_keeps_the_workspace_of_a_withdrawn_site_so_its_tombstone_stays_where_the_pass_looks(tmp_path):
