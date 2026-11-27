@@ -1252,6 +1252,14 @@ billing export and the daily snapshot beside those folders are backed up. A
 host that is lost loses that history of raw provider responses; the providers
 keep their own invoices.
 
+The same holds under `sam31-preparation-executions/`: the queue's own records
+are backed up, and `watchdog-cgroup-cleanup/` beside them is not. It held
+148,683 one-line sweep receipts on 2026-11-27, the last written 2026-11-12,
+against 486 queue records, and no job resumes from them.
+
+A run is bounded at 20 minutes and 2 GiB. Measured on 2026-11-27 with both
+folders above left out: about 40,000 files and 0.5 GB before packing.
+
 - Encryption: AES-GCM under a key made for that generation alone. That key is
   sealed to the owner's public key and travels in the generation's seal. The
   public key is a committed file every release carries,

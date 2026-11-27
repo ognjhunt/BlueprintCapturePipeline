@@ -81,7 +81,10 @@ MAX_FILE_BYTES = 16 * 1024 * 1024
 RECORD_MAX_FILE_BYTES = 1024 * 1024
 RECORD_SUFFIXES = (".json", ".jsonl")
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024
-DEFAULT_MAX_SECONDS = 10 * 60
+# Twenty minutes of an hourly run. Ten was set before the state had been measured; the runs of 2026-11-27
+# read about 300 small files a second at this unit's I/O priority, and a run that stops short uploads and
+# then deletes everything it packed.
+DEFAULT_MAX_SECONDS = 20 * 60
 PART_BYTES = 8 * 1024 * 1024
 #: The fastest gzip level. The first run on the host (2026-11-26) packed 3.3 GB of records at tarfile's
 #: default, level 9, used 4.5 CPU minutes on them and stopped at its 10-minute bound with more to read.
@@ -186,7 +189,7 @@ ALLOWLIST: tuple[BackupRoot, ...] = (
             *(f"{_CP}/{name}" for name in (
                 "atlas-provider-poll", "capture-reconstruction-queue", "native-g1-site-registrations",
                 "native-g1-team-campaigns", "native-g1-team-policy-runs", "native-g1-team-campaign-work",
-                "native-g1-team-policy-work", "rigid-robot-free-probes", "sam31-preparation-executions",
+                "native-g1-team-policy-work", "rigid-robot-free-probes",
                 "scene-object-discoveries", "task-evaluation-configured-controls",
                 "task-evaluation-episode-compilations", "task-evaluation-launch-activations",
                 "task-evaluation-launch-preparations", "task-evaluation-launches",
@@ -195,6 +198,13 @@ ALLOWLIST: tuple[BackupRoot, ...] = (
                 "task-evaluation-terminal-resource-releases", "task-evaluation-terminal-resource-releases-state",
                 "team-evaluations", "team-scene-packets", "website-source-bindings")),
             "/var/lib/blueprint-operator-door/requests"),
+    # The SAM preparation queue, without the dispatcher watchdog's sweep receipts beside it: one tiny file a
+    # sweep, 148,683 of them on 2026-11-27 (the last written 2026-11-12) against 486 queue records. They
+    # record no job and nothing resumes from them, and reading them took a run past its time bound.
+    BackupRoot(f"{_CP}/sam31-preparation-executions", True,
+               "job queues and their state: records only, so jobs in flight resume where they were; "
+               "the dispatcher watchdog's cgroup sweep receipts are not backed up",
+               exclude=("watchdog-cgroup-cleanup",)),
     *_roots(True, "work-volume attempts: their ledgers, receipts and result summaries only, never bundles",
             "/mnt/blueprint-work/beta-policy-screening-work", "/mnt/blueprint-work/embodiment-preparation",
             "/mnt/blueprint-work/rigid-robot-free-probe-work"),
