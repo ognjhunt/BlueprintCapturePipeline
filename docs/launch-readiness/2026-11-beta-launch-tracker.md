@@ -306,6 +306,27 @@ Intended design: every upload is written to one record before it is sent, and st
   - The rule never clears a run offloaded after the site came. Any such run whose pointer names no site makes the plan `unresolved` again. Runbook section 8 lists the owner's steps before the first apply: the 74 unreadable pointers, the source bucket before the apply, and reading the first plan before the cool-off ends.
 - **2026-11-27, second review (not deployed, not pushed):** two older gaps, each closed by a stop-gap that only does less. A retirement receipt moved aside named a workspace archive the plan never listed, so an apply could leave it unmentioned; the plan is now `unresolved` on `website_withdrawal_deletion_moved_aside_retirement_receipt`, and deleting that archive is still owed. Retention could retire a withdrawn site's workspace with its tombstone, hiding the withdrawal from the pass; it now never retires a workspace with a tombstone (`withdrawal_tombstone_present`). The tracker's withdrawal has no retirement receipt on the host (read 2026-11-27), so neither gap has touched it.
 
+## Deploy on 2026-11-27 outside the D-08 window, for privacy (`78f0732`)
+
+- **On the owner's word, for privacy:** the owner said "merge everything" at about 13:55Z and "Deploy" at about 14:35Z, after two reviews of the withdrawal fix. D-08 allows a privacy fix outside the window. The request names it in its operation key, `privacy:withdrawal-offloaded-runs:pr3769`.
+- **Before, 14:35Z (door status and requests):**
+  - active release `b22546f`, `commit_proven` true, no blockers;
+  - no deploy unit, no activation hold, no paid-launch lock held, and the door queue empty;
+  - failed units 0;
+  - November counted spend $363.26 of the $400 limit, admission allowed;
+  - the withdrawal approval `valid`, from the release; 1 withdrawal `failing` and `waiting`.
+- **Which commit:** main's head `78f0732` (#3769). CI, CodeQL and Python Compatibility succeeded on it at 13:56Z.
+- **14:36:06Z, `78f0732`:** request `20261127T143606Z-deploy-602ac5aa`; deployed at 14:47:22Z (receipt `iteration_78f073271445_door.json`).
+- **What the release carries since `b22546f`:** #3769 (the entry above), and #3768, which changed only this tracker.
+- **After, 14:47:42Z:**
+  - active release `78f0732`, `commit_proven` true, no blockers;
+  - no deploy unit, no activation hold, door queue empty;
+  - receipt: no paused lane disarmed, failed or held;
+  - failed units 1: `blueprint-gpu-spend-guard.service`. The list read 0 at 14:35Z; its journal was not read this time;
+  - counted spend $363.26, admission allowed.
+- **The withdrawal (`site-capture-ceba4511…`):** still `failing` from the older release. Its first plan on this release is the first pass after 2026-11-27 16:21Z, and its cool-off ends 2026-11-28 02:25Z. Not yet proven: no plan has completed on the host, and no apply has run.
+- **Still the owner's, before the first apply:** the owner and group of the 74 offload pointers the door could not read, and `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` with Cloud Storage credentials the unit can use. Runbook: `docs/runbooks/beta-operations.md` section 8.
+
 ## The host's state backup needs no hand-installed secret (2026-11-26)
 
 - **Owner decision, 2026-11-26:** on the readiness check's finding that the control plane's state had no backup, "i approve - lets fix this for now and future". Asked how, the owner chose a key pair made in that session and the B2 bucket the host already uses.
