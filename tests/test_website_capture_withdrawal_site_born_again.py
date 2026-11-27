@@ -257,8 +257,21 @@ def test_a_site_born_again_after_its_workspace_was_retired_does_not_clear_the_ru
     journal = again.parents[1] / "website_withdrawal" / deletion.SITE_RECORD_FILENAME
     assert not journal.exists()
 
-    # The retention timer's next pass over the born-again workspace finds the old receipt beside it, sees
-    # that it does not describe this workspace, and moves it aside (receipt_workspace_mismatch).
+    # Since 2026-11-27 retention never touches a workspace that holds a withdrawal tombstone, so after the
+    # withdrawal the old receipt keeps its name.
+    plan = retention.plan_scene_workspace_retirement(
+        context=world["context"], bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR,
+        cloud=world["cloud"], process_checker=lambda _path: False)
+    assert plan["status"] == "retained" and retention.WITHDRAWAL_TOMBSTONE_REASON in plan["reasons"]
+    assert world["receipt"].is_file()
+
+    # Before the withdrawal it still can: the retention timer's pass over the born-again workspace finds the
+    # old receipt beside it, sees that it does not describe this workspace, and moves it aside
+    # (receipt_workspace_mismatch). The same site, in a world where that pass came first:
+    world = _first_life_then_retired(tmp_path / "moved-aside-first")
+    launches, scenes = world["launches"], world["capture"].parents[2]
+    again = _deliver(tmp_path / "moved-aside-first", world["cloud"], _renewed(), ended=False,
+                     video=b"the site's second walkthrough video")
     plan = retention.plan_scene_workspace_retirement(
         context=world["context"], bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR,
         cloud=world["cloud"], process_checker=lambda _path: False)
@@ -272,6 +285,8 @@ def test_a_site_born_again_after_its_workspace_was_retired_does_not_clear_the_ru
     # What is beside the live workspace now: the receipt under another name, and nothing the rule looks for.
     assert sorted(path.name for path in scenes.iterdir()) == [Path(result["quarantined_receipt"]).name, SCENE]
     assert Path(result["quarantined_receipt"]).name.startswith(f".{SCENE}{retention.RETIRED_SUFFIX}.")
+    _withdraw(again)
+    journal = again.parents[1] / "website_withdrawal" / deletion.SITE_RECORD_FILENAME
 
     # The site's run of its first life holds its footage, was offloaded after the site first came, and the
     # hourly pass never reads the archive: it must stay undetermined, and the apply must refuse.
@@ -291,6 +306,8 @@ def test_a_site_born_again_after_its_workspace_was_retired_does_not_clear_the_ru
 
 
 def _born_again_and_receipt_moved_aside(tmp_path: Path) -> dict:
+    """Born again, and retention's pass moved the old receipt aside before the site withdrew (after it, the
+    tombstone stops retention)."""
     world = _first_life_then_retired(tmp_path)
     again = _deliver(tmp_path, world["cloud"], _renewed(), ended=False, video=b"the site's second walkthrough video")
     plan = retention.plan_scene_workspace_retirement(
@@ -518,12 +535,6 @@ def test_the_workspace_archive_of_a_receipt_moved_aside_is_in_the_plan(tmp_path,
     assert archive in json.dumps(plan), (plan["scene_workspace"], plan["unresolved"])
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "REVIEW FINDING, older than commit 4b2652b: the retention code does not know the withdrawal journal. Once "
-    "nothing under a withdrawn site's workspace has changed for 48 hours (the withdrawal pass rewrites its state "
-    "there on each attempt, so only while that pass is not handling the site) it plans the workspace for "
-    "retirement, tombstone included; after the apply the automatic pass finds no withdrawal for the site at all. "
-    "Remove this marker with the fix."))
 def test_retention_keeps_the_workspace_of_a_withdrawn_site_so_its_tombstone_stays_where_the_pass_looks(tmp_path):
     cloud = FakeCloud()
     capture = _deliver(tmp_path, cloud, _payload(), ended=False, video=b"the site's walkthrough video")
@@ -537,3 +548,42 @@ def test_retention_keeps_the_workspace_of_a_withdrawn_site_so_its_tombstone_stay
         process_checker=lambda _path: False)
     assert "website_withdrawal/tombstone.json" not in [row["relative_path"] for row in plan["archive"]], plan["status"]
     assert plan["status"] == "retained", plan["status"]
+    assert retention.WITHDRAWAL_TOMBSTONE_REASON in plan["reasons"], plan["reasons"]
+    # The reason is the tombstone: the same workspace without it would be retired (next test).
+    assert plan["reasons"] == [retention.WITHDRAWAL_TOMBSTONE_REASON], plan["reasons"]
+
+
+def test_retention_retires_a_workspace_with_no_tombstone_exactly_as_before(tmp_path):
+    cloud, client = FakeCloud(), MultipartClient()
+    capture = _deliver(tmp_path, cloud, _payload(), ended=False, video=b"the site's walkthrough video")
+    context = _context(tmp_path, keep_shared_workspaces=True, retire_internal_test_jobs=True)
+    plan = retention.plan_scene_workspace_retirement(
+        context=context, bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR, cloud=cloud,
+        process_checker=lambda _path: False)
+    assert plan["status"] == "retirable" and plan["reasons"] == [], plan["reasons"]
+    result = retention.apply_scene_workspace_retirement(
+        plan, context=context, ack=retention.RETIRE_ACK, cloud=cloud, now=plan["observed_at_epoch"],
+        stream_publisher=functools.partial(store.publish_configured_scene_stream, client=client,
+                                           bucket=ARTIFACT_BUCKET),
+        process_checker=lambda _path: False)
+    assert result["status"] == "retired" and not capture.exists(), result
+
+
+def test_a_tombstone_written_after_the_plan_stops_the_apply(tmp_path):
+    cloud, client = FakeCloud(), MultipartClient()
+    capture = _deliver(tmp_path, cloud, _payload(), ended=False, video=b"the site's walkthrough video")
+    context = _context(tmp_path, keep_shared_workspaces=True, retire_internal_test_jobs=True)
+    plan = retention.plan_scene_workspace_retirement(
+        context=context, bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR, cloud=cloud,
+        process_checker=lambda _path: False)
+    assert plan["status"] == "retirable", plan["reasons"]
+    # The site withdraws between the reclaim timer's plan and its apply. (The apply's unchanged-files check
+    # also stops this; the tombstone check is the reason that does not depend on it.)
+    _withdraw(capture)
+    result = retention.apply_scene_workspace_retirement(
+        plan, context=context, ack=retention.RETIRE_ACK, cloud=cloud, now=plan["observed_at_epoch"],
+        stream_publisher=functools.partial(store.publish_configured_scene_stream, client=client,
+                                           bucket=ARTIFACT_BUCKET),
+        process_checker=lambda _path: False)
+    assert result["status"] == "skipped" and capture.is_dir(), result
+    assert (capture.parents[1] / "website_withdrawal" / "tombstone.json").is_file()
