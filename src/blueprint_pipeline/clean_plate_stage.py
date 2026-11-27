@@ -85,10 +85,26 @@ LOCALISATION_CODES = frozenset({
 })
 
 
-def _not_located(plan: Mapping[str, Any], exc: BaseException) -> dict[str, Any] | None:
+def _people_masked(output_root: Path) -> bool:
+    """Whether the job's Privacy version still has people masked (one before 2026-11-17.1, ``face_blur_required``).
+
+    A job under a later version is not screened or blurred for people (AGENTS.md, The Only Hard Stops): its people stay
+    in the scan as filmed. Any doubt, and any error while deciding, answers True: the private side.
+    """
+    from .atlas_privacy_screen import face_blur_required
+    try:
+        return bool(face_blur_required(output_root)[0])
+    except Exception:  # noqa: BLE001 - any doubt masks
+        return True
+
+
+def _not_located(plan: Mapping[str, Any], exc: BaseException, *, people_masked: bool = True) -> dict[str, Any] | None:
     """The plan going on flagged ``NOT_LOCATED`` with nothing removed, or None when the failure must still stop.
 
-    It stops when a person is to be masked (the masks protect privacy), when the refusal is about money
+    It stops when a person is to be masked and the job's Privacy version still masks people (``people_masked``; under
+    a later version people are not screened, so the masks protect no privacy: stress test 2026-11-27, test job
+    truck-carton-unload stopped here for good on a carton the look could not ground, two workers in shot), when the
+    refusal is about money
     (``PaidResourceAdmissionBlocked``), when the code is not a localisation refusal, and when the refusal may
     concern another target than the job's object (the one the robot moves): the package would then say of
     the job's object something untrue. Kept surfaces and obstacles are deferred (``defer_kept_static``), so
@@ -109,7 +125,8 @@ def _not_located(plan: Mapping[str, Any], exc: BaseException) -> dict[str, Any] 
                 (row.get("spatial_evidence") or [{}])[0].get("timestamp_seconds") is not None for row in others)) and (
             code != "website_task_targets_resolve_to_same_instance" or len(job) > 1)
     if (isinstance(exc, PaidResourceAdmissionBlocked) or not concerns_job
-            or any(row.get("target_class") == "person" and row.get("disposition") == "remove" for row in targets)):
+            or (people_masked and any(row.get("target_class") == "person" and row.get("disposition") == "remove"
+                                      for row in targets))):
         return None
     for row in targets:
         if row.get("disposition") == "remove":
@@ -565,7 +582,7 @@ def _run_clean_plate_stage(
         except HandoffLeaseError:
             raise
         except Exception as exc:
-            located = _not_located(plan, exc)
+            located = _not_located(plan, exc, people_masked=_people_masked(clean_plate_root))
             if located is not None:
                 plan = task_plan = located
                 status, mode, reason = "noop", "noop", None

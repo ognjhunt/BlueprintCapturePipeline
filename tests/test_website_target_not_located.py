@@ -59,11 +59,14 @@ def test_an_anchor_box_rounded_past_the_frame_is_clipped_and_a_malformed_one_sti
             masks.anchor_scores(target=target, tracks=[_track()], frames=frames)
 
 
-def _clean_plate(tmp_path, monkeypatch, *, targets, frames_fail=None, masks_fail=None):
+def _clean_plate(tmp_path, monkeypatch, *, targets, frames_fail=None, masks_fail=None, privacy_version=None):
     from blueprint_pipeline import clean_plate_stage as stage
     from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
     from tests.test_clean_plate_stage import _make_capture
     capture = _make_capture(tmp_path)
+    if privacy_version is not None:  # the job's sealed grant names the Privacy version it was started under
+        from tests.test_atlas_face_blur_decision import _grant
+        _grant(capture / "pipeline", privacy_version)
     plan = build_removal_plan(targets=[dict(row) for row in targets], status="completed", blockers=[],
                               model="test", processing="agentic")
     monkeypatch.setattr(stage, "analyze_removal_targets", lambda **_: plan)
@@ -140,6 +143,26 @@ def test_privacy_money_and_other_refusals_still_stop(tmp_path, monkeypatch, case
     _capture, result = _clean_plate(tmp_path, monkeypatch, targets=targets,
                                     **({"masks_fail": ValueError("unused")} | failure))
     assert result["status"] == "blocked" and result["blockers"] and "flags" not in result
+
+
+@pytest.mark.parametrize("failure", ["website_task_grounding_uncertain", "task_target_spatial_anchor_invalid"])
+def test_a_person_in_shot_stops_nothing_under_a_privacy_version_that_does_not_mask_people(tmp_path, monkeypatch, failure):
+    """Stress test, 2026-11-27, test job truck-carton-unload (itest-05cf5a51): the look could not ground the carton,
+    two workers were in shot, and the clean plate stopped for good because "a person is to be masked". Under Privacy
+    2026-11-17.1 and later people are not screened or blurred (AGENTS.md), so the masks protect no privacy: the job
+    goes on flagged, nothing removed, its people in the scan as filmed. A job under an earlier version, or one whose
+    version cannot be read, still stops (``test_privacy_money_and_other_refusals_still_stop``)."""
+    from blueprint_pipeline import clean_plate_stage as stage
+
+    capture, result = _clean_plate(tmp_path, monkeypatch, targets=[DRAWER, PERSON], masks_fail=ValueError(failure),
+                                   privacy_version="2026-11-25.2")
+    assert (result["status"], result["blockers"], result["flags"]) == ("noop", [], [NOT_LOCATED])
+    plan = json.loads((capture / "pipeline/clean_plate/removal_plan.json").read_text())
+    assert [row["disposition"] for row in plan["targets"]] == ["keep", "keep"]
+    assert stage._people_masked(capture / "pipeline" / "clean_plate") is False
+    # The same job with no Privacy version on record stops, as any doubt masks.
+    (capture / "pipeline" / "website_scene_sponsorship.json").unlink()
+    assert stage._people_masked(capture / "pipeline" / "clean_plate") is True
 
 
 def test_an_object_not_outlined_ships_the_room_package_and_says_so(tmp_path, monkeypatch):
