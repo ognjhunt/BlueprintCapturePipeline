@@ -14,12 +14,15 @@ import os
 import sys
 import tarfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from blueprint_pipeline import website_capture_withdrawal as withdrawal
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
+from blueprint_pipeline import website_capture_withdrawal_drill as drill
 from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
@@ -922,3 +925,323 @@ def test_a_withdrawal_during_a_slimming_upload_leaves_no_slim_archive_once_delet
     receipt = _apply(world, plan)
     assert not store.present(uploaded[0])
     assert uploaded[0] in {row["uri"] for row in receipt["deleted"]["objects"]}
+
+
+# --- The host's shape on 2026-11-27: offloaded runs that name no site and were offloaded before the site came ---
+#
+# The production pass never reads archives. On the host, 144 readable pointer-only runs name no site in their
+# sealed pointers, and every one was offloaded hours before the withdrawn site's first record on the host. Each
+# one used to be an unresolved row, so the plan could never apply. The rule: such a run is not the site's when
+# its sealed evidence-offload pointer says it left the host more than PREDATES_SITE_MARGIN_SECONDS before the
+# site's earliest record there. Anything missing, unsealed, odd or too close keeps it undetermined.
+
+HOST_REQUEST = "capture-0f0e0d0c-0b0a-4908-8706-050403020100"
+MARGIN = 6 * 3600
+UNDETERMINED = "website_withdrawal_deletion_offloaded_run_binding_undetermined"
+PREDATES = "website_withdrawal_deletion_offloaded_run_predates_site"
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _ledger(capture: Path, started_at: float, history: tuple[float, ...] = ()) -> Path:
+    """The handoff listener's job ledger, as it writes it at its first lease claim and carries it forward."""
+
+    return drill._write(capture / "pipeline_job_ledger.json", {
+        "schema_version": "pipeline_job_ledger.v1", "revision": 7, "status": "completed",
+        "started_at": _iso(started_at),
+        "attempt_history": [{"attempt_number": index + 1, "status": "failed_retryable", "started_at": _iso(at)}
+                            for index, at in enumerate(history)]})
+
+
+def _older_pointer(world: dict, root: Path, name: str, offloaded_at: Any, digit: str, *,
+                   suffix: str = ".offloaded.v1.json", drop: tuple[str, ...] = (), **fields: Any) -> Path:
+    """A sealed pointer-only run that names no site, as the offload writes it; its archive object is on B2."""
+
+    uri = drill._uri("control-plane-evidence", digit, "evidence.tar")
+    world["store"].put(uri, b"an older run's archive")
+    if suffix == ".residue.v1.json":
+        value = {"schema_version": "control_plane_result_residue_pointer.v1", "run": name, "uri": uri}
+    else:
+        value = {"schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+                 "directory": name, "terminal_receipt": None, "uri": uri, "digest": "sha256:" + digit * 64,
+                 "size_bytes": 22, "member_count": 0, "members": [], "retained_receipt_bytes": {},
+                 "evidence_deleted": False}
+    value = {**value, "offloaded_at_epoch": offloaded_at, **fields}
+    for key in drop:
+        value.pop(key, None)
+    world.setdefault("older_uris", {})[name] = uri
+    return drill._write(root / f"{name}{suffix}", drill._sealed(value, "pointer_digest"))
+
+
+def _host_shaped(tmp_path: Path) -> dict:
+    """The withdrawn site with its own runs, another site's run, and three older runs that name no site."""
+
+    world = drill.build_world(tmp_path, HOST_REQUEST)
+    withdrawal.acknowledge_withdrawal(capture_root=world["capture"], command={
+        "schema_version": "website_capture_withdrawal.v1", "request_id": HOST_REQUEST,
+        "scene_id": f"site-{HOST_REQUEST}", "capture_id": f"walkthrough-{HOST_REQUEST}",
+        "withdrawal_id": f"withdrawal-{HOST_REQUEST}", "requested_at_iso": "2026-11-25T02:25:31Z"})
+    # The site's first record on the host: the listener's first lease claim, 10 days ago (the drill's own
+    # unrelated run left 30 days ago). Every file under the site was written now, so the ledger is the earliest.
+    first = float(int(time.time()) - 10 * 86400)  # whole seconds, so the ledger's text holds it exactly
+    _ledger(world["capture"], first)
+    launches, canaries = world["other_run"].parent, world["site_runs"][1].parent
+    # Offloaded 14 hours before the site's first record, as the host's newest no-site pointer was.
+    older = {"launch-website-legacy-trial-0101": launches, "launch-website-legacy-trial-0102": launches,
+             "team-scored-run-legacy-0103": canaries}
+    for (name, root), digit in zip(older.items(), "124"):
+        _older_pointer(world, root, name, first - 14 * 3600, digit)
+    drill_older = world.get("unrelated_older_pointer")
+    world.update(first=first, launches=launches, canaries=canaries, older_added=sorted(older),
+                 older=sorted([*older, *([drill_older["name"]] if drill_older else [])]),
+                 resolution={**world["resolution"], "object_store": deletion.B2ObjectVersions(world["store"],
+                                                                                              drill.BUCKET),
+                             "cloud_storage": world["gcs"]})
+    return world
+
+
+def _host_plan(world: dict, **overrides: Any) -> dict:
+    # The production resolution: no scan_offloaded_archives.
+    return deletion.plan_withdrawal_deletion(capture_root=world["capture"], **{**world["resolution"], **overrides})
+
+
+def _undetermined(plan: dict) -> list[str]:
+    return sorted(Path(row["path"]).name for row in plan["unresolved"] if row["reason"] == UNDETERMINED)
+
+
+def _cleared(plan: dict) -> list[str]:
+    return sorted(Path(row["path"]).name for row in plan["offloaded_runs_older_than_site"]["runs"])
+
+
+def test_offloaded_runs_older_than_the_site_that_name_no_site_do_not_block_its_withdrawal(tmp_path):
+    world = _host_shaped(tmp_path)
+    plan = _host_plan(world)
+    assert plan["unresolved"] == [], plan["unresolved"]
+    section = plan["offloaded_runs_older_than_site"]
+    assert _cleared(plan) == world["older"]
+    assert section["margin_seconds"] == MARGIN
+    assert section["site_earliest_record"]["epoch"] == pytest.approx(world["first"], abs=1e-3)
+    assert section["site_earliest_record"]["unavailable_reason"] is None
+    for row in section["runs"]:
+        # Each cleared run says why, with the two times compared.
+        assert row["reason"] == PREDATES
+        assert row["site_earliest_record_epoch"] == section["site_earliest_record"]["epoch"]
+        assert row["offloaded_at_epoch"] + MARGIN < row["site_earliest_record_epoch"]
+    # The site's own runs are still planned for deletion, and nothing else is.
+    request = HOST_REQUEST
+    assert {run["name"] for run in plan["runs"]} == {
+        f"launch-{request}-construction-0001", "team-scored-run-drill-0001", f"launch-{request}-controls-0002",
+        "scene-" + __import__("hashlib").sha256(request.encode()).hexdigest()}
+    assert not set(world["older_uris"].values()) & {row["uri"] for row in plan["objects"]}
+
+
+def test_the_rule_adds_nothing_to_what_is_deleted(tmp_path):
+    world = _host_shaped(tmp_path)
+    plan = _host_plan(world)
+    pointers = sorted(path for root in (world["launches"], world["canaries"])
+                      for path in root.glob("*.offloaded.v1.json")
+                      if path.name[: -len(".offloaded.v1.json")] in world["older"])
+    moved = tmp_path / "moved-away"
+    moved.mkdir()
+    for path in pointers:
+        path.rename(moved / path.name)
+    without = _host_plan(world)
+    for path in pointers:
+        (moved / path.name).rename(path)
+    # The same runs, objects and site files with and without the older runs: the rule only empties a list.
+    assert [run["name"] for run in plan["runs"]] == [run["name"] for run in without["runs"]]
+    assert [row["uri"] for row in plan["objects"]] == [row["uri"] for row in without["objects"]]
+    assert plan["scene_files"] == without["scene_files"]
+    assert without["offloaded_runs_older_than_site"]["runs"] == []
+    # Applied: every older pointer and its archive stay; the receipt names them as kept.
+    receipt = deletion.apply_withdrawal_deletion(capture_root=world["capture"], expected_plan_digest=plan["digest"],
+                                                 authorize_complete_deletion=True, **world["resolution"])
+    assert all(path.is_file() for path in pointers)
+    assert all(world["store"].versions_of(uri) == 1 for uri in world["older_uris"].values())
+    assert sorted(Path(row["path"]).name for row in receipt["offloaded_runs_older_than_site"]["runs"]) \
+        == world["older"]
+    kept = [row for row in receipt["remaining"] if row["holder"] == "offloaded_runs_older_than_site"]
+    assert len(kept) == 1 and kept[0]["count"] == len(world["older"]) and kept[0]["reason"]
+    assert not any(str(path) in receipt["deleted"]["files"] for path in pointers)
+
+
+def test_an_object_a_cleared_run_also_names_is_still_not_the_sites_to_delete(tmp_path):
+    world = _host_shaped(tmp_path)
+    # The site's team run names an archive that an older, cleared run also names.
+    shared = world["older_uris"]["launch-website-legacy-trial-0101"]
+    drill._write(world["site_runs"][1] / "artifacts/result_delivery/remote_artifacts/shared.json", {"uri": shared})
+    plan = _host_plan(world)
+    assert {"uri": shared, "reason": "website_withdrawal_deletion_object_shared_with_unbound_run"} in plan["unresolved"]
+    assert shared not in {row["uri"] for row in plan["objects"]}
+
+
+@pytest.mark.parametrize("fault", [
+    "offloaded_after_the_site",  # the site's own run, offloaded after its data came, naming nothing locally
+    "inside_the_margin", "exactly_the_margin", "missing_time", "boolean_time", "text_time", "not_a_number_time",
+    "negative_time", "not_offloaded_status", "residue_pointer", "leftover_beside_it", "directory_present",
+])
+def test_a_run_that_could_hold_the_sites_data_stays_undetermined(tmp_path, fault):
+    world = _host_shaped(tmp_path)
+    first, name, root = world["first"], "launch-website-suspect-0200", world["launches"]
+    kwargs: dict[str, Any] = {}
+    at: Any = first - 14 * 3600
+    if fault == "offloaded_after_the_site":
+        at = first + 60
+    elif fault == "inside_the_margin":
+        at = first - MARGIN + 0.5  # a clock off by less than the margin must not clear it
+    elif fault == "exactly_the_margin":
+        at = first - MARGIN  # equal is the safe side
+    elif fault == "missing_time":
+        kwargs["drop"] = ("offloaded_at_epoch",)
+    elif fault == "boolean_time":
+        at = True
+    elif fault == "text_time":
+        at = str(first - 14 * 3600)
+    elif fault == "not_a_number_time":
+        at = float("nan")
+    elif fault == "negative_time":
+        at = -1.0
+    elif fault == "not_offloaded_status":
+        kwargs["status"] = "restored"
+    elif fault == "residue_pointer":
+        kwargs["suffix"] = ".residue.v1.json"
+    _older_pointer(world, root, name, at, "7", **kwargs)
+    if fault == "leftover_beside_it":
+        drill._write(root / f".{name}.pointer-123.tmp", b"a pointer temporary")
+    elif fault == "directory_present":
+        drill._write(root / name / "launch_profile.json", {"note": "a run directory that came back"})
+    plan = _host_plan(world)
+    if fault == "directory_present":
+        # A run directory is read, never judged by its pointer: it names nothing, so it is simply not the site's.
+        assert name not in _cleared(plan) and name not in {run["name"] for run in plan["runs"]}
+        return
+    assert _undetermined(plan) == [name], plan["unresolved"]
+    assert name not in _cleared(plan)
+    assert _cleared(plan) == world["older"]  # the others still clear
+    with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
+        deletion.apply_withdrawal_deletion(capture_root=world["capture"], expected_plan_digest=plan["digest"],
+                                           authorize_complete_deletion=True, **world["resolution"])
+    assert world["store"].deleted == []
+
+
+def test_a_pointer_rewritten_without_its_writers_seal_is_never_cleared(tmp_path):
+    world = _host_shaped(tmp_path)
+    path = world["launches"] / "launch-website-legacy-trial-0101.offloaded.v1.json"
+    # Back-dated after the fact: the seal no longer matches.
+    drill._write(path, {**json.loads(path.read_text()), "offloaded_at_epoch": 1.0})
+    plan = _host_plan(world)
+    assert {"path": str(path.parent / "launch-website-legacy-trial-0101"),
+            "reason": "website_withdrawal_deletion_pointer_unsealed"} in plan["unresolved"]
+    assert "launch-website-legacy-trial-0101" not in _cleared(plan)
+
+
+def test_a_pointer_the_service_cannot_read_stays_unresolved_whatever_its_file_time(tmp_path, monkeypatch):
+    world = _host_shaped(tmp_path)
+    path = world["launches"] / "launch-website-legacy-trial-0102.offloaded.v1.json"
+    os.utime(path, (world["first"] - 30 * 86400, world["first"] - 30 * 86400))  # a file time is not evidence
+    original = Path.read_bytes
+
+    def read_bytes(self):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    plan = _host_plan(world)
+    assert {"path": str(path.parent / "launch-website-legacy-trial-0102"),
+            "reason": "website_withdrawal_deletion_record_unreadable"} in plan["unresolved"]
+    assert "launch-website-legacy-trial-0102" not in _cleared(plan)
+
+
+@pytest.mark.parametrize("fault, reason", [
+    ("no_ledger", "site_job_ledger_unreadable"),
+    ("ledger_not_json", "site_job_ledger_unreadable"),
+    ("ledger_wrong_schema", "site_job_ledger_unreadable"),
+    ("ledger_without_started_at", "site_job_ledger_unreadable"),
+    ("ledger_started_at_without_zone", "site_job_ledger_unreadable"),
+    ("ledger_symlink", "site_job_ledger_unreadable"),
+    ("second_capture_without_ledger", "site_job_ledger_unreadable"),
+    ("retired_workspace", "site_workspace_retired"),
+    ("retiring_leftover", "site_workspace_retired"),
+])
+def test_without_the_sites_earliest_record_nothing_is_cleared(tmp_path, fault, reason):
+    world = _host_shaped(tmp_path)
+    capture, site = world["capture"], world["site"]
+    ledger = capture / "pipeline_job_ledger.json"
+    if fault == "no_ledger":
+        ledger.unlink()
+    elif fault == "ledger_not_json":
+        ledger.write_bytes(b"{not json")
+    elif fault == "ledger_wrong_schema":
+        drill._write(ledger, {**json.loads(ledger.read_text()), "schema_version": "pipeline_job_ledger.v0"})
+    elif fault == "ledger_without_started_at":
+        value = json.loads(ledger.read_text())
+        value.pop("started_at")
+        drill._write(ledger, value)
+    elif fault == "ledger_started_at_without_zone":
+        drill._write(ledger, {**json.loads(ledger.read_text()), "started_at": "2026-10-28T15:22:51"})
+    elif fault == "ledger_symlink":
+        target = tmp_path / "elsewhere.json"
+        ledger.rename(target)
+        ledger.symlink_to(target)
+    elif fault == "second_capture_without_ledger":
+        drill._write(capture.parent / f"walkthrough-{HOST_REQUEST}-supplement" / "raw/video.mp4", b"more video")
+    elif fault == "retired_workspace":
+        drill._write(site.parent / f"{site.name}.retired.v1.json", {"note": "a workspace retirement receipt"})
+    else:
+        (site.parent / f".retiring-{site.name}-1").mkdir()
+    record = deletion._site_earliest_record(site, {"scene_id": site.name})
+    assert record["epoch"] is None and record["unavailable_reason"] == reason
+    if fault == "ledger_symlink":
+        # A link inside the site stops the whole plan before anything is judged.
+        with pytest.raises(ValueError, match="symlink"):
+            _host_plan(world)
+        return
+    plan = _host_plan(world)
+    section = plan["offloaded_runs_older_than_site"]
+    assert section["site_earliest_record"]["epoch"] is None
+    assert section["site_earliest_record"]["unavailable_reason"] == reason
+    assert section["runs"] == []
+    assert set(world["older"]) <= set(_undetermined(plan))
+
+
+@pytest.mark.parametrize("earlier", ["a_file_under_the_site", "an_earlier_attempt_in_the_ledger"])
+def test_any_earlier_trace_of_the_site_moves_the_comparison_earlier(tmp_path, earlier):
+    world = _host_shaped(tmp_path)
+    old = world["first"] - 20 * 3600  # before the older runs left the host
+    if earlier == "a_file_under_the_site":
+        os.utime(world["capture"] / "raw/video.mp4", (old, old))
+    else:
+        _ledger(world["capture"], world["first"], history=(old,))
+    plan = _host_plan(world)
+    assert plan["offloaded_runs_older_than_site"]["site_earliest_record"]["epoch"] == pytest.approx(old, abs=1e-3)
+    # The runs that left 14 hours before the ledger's start now left after that trace: undetermined again. Only
+    # the drill's run, offloaded 30 days ago, is still older than everything.
+    assert not set(world["older_added"]) & set(_cleared(plan))
+    assert set(world["older_added"]) <= set(_undetermined(plan))
+
+
+@pytest.mark.parametrize("journal", ["as_sealed", "moved_later_without_its_seal", "of_another_tombstone"])
+def test_after_the_apply_the_journal_keeps_the_sites_earliest_record_and_only_its_seal_is_trusted(tmp_path, journal):
+    world = _host_shaped(tmp_path)
+    plan = _host_plan(world)
+    path = world["site"] / "website_withdrawal" / deletion.SITE_RECORD_FILENAME
+    kept = json.loads(path.read_text())
+    assert kept["epoch"] == pytest.approx(world["first"], abs=1e-3)
+    deletion.apply_withdrawal_deletion(capture_root=world["capture"], expected_plan_digest=plan["digest"],
+                                       authorize_complete_deletion=True, **world["resolution"])
+    # The apply removed the site's files, its job ledger with them; the journal stays.
+    assert not (world["capture"] / "pipeline_job_ledger.json").exists() and path.is_file()
+    if journal == "moved_later_without_its_seal":
+        path.write_text(json.dumps({**kept, "epoch": world["first"] + 400 * 86400}))
+    elif journal == "of_another_tombstone":
+        path.write_text(json.dumps(drill._sealed({**kept, "tombstone_digest": "sha256:" + "0" * 64}, "digest")))
+    again = _host_plan(world)
+    if journal == "as_sealed":
+        assert again["unresolved"] == [] and _cleared(again) == world["older"]
+        assert again["offloaded_runs_older_than_site"]["site_earliest_record"]["journal_epoch"] == kept["epoch"]
+    else:
+        assert again["offloaded_runs_older_than_site"]["site_earliest_record"]["epoch"] is None
+        assert _cleared(again) == [] and set(world["older"]) <= set(_undetermined(again))

@@ -952,6 +952,7 @@ latest plan is next to it, in `automatic_deletion_plan.json`.
 | `legal_hold` | `legal_hold.json` holds the site. Nothing is deleted. | Nothing, until the hold is lifted |
 | `failed` | `last_error`, `failure_count`, `next_attempt_at_epoch`. It retries after 1 h, 4 h, then every 24 h. It never stops trying. | Read `last_error` and the journal |
 | `applied` | `receipt_digest`; the receipt is in `deletion_receipts/`. | Nothing |
+| `incomplete` | Applied, but something is left; `waiting_on` names each holder. Planned and applied again after 1 h (a provider delete failed) or 6 h. When only `capture_source_bucket` is left, it is not applied again until a source bucket is named, and `owner_action` says so. | See "Complete or incomplete" |
 
 A waiting plan is planned again every 6 hours. A clean plan that waits only for
 the approval or the cool-off is applied on the first pass after both allow it.
@@ -965,6 +966,53 @@ The capacity controller copies its counts into the capacity summary as
 `host_quiet`, and `withdrawals` with `waiting`, `awaiting_owner_approval`,
 `cool_off`, `unresolved`, `money_unsettled`, `legal_hold`, `failing` and
 `overdue`.
+
+### Offloaded runs older than the site
+
+The pass never reads offloaded archives. A run whose directory went to B2 is
+judged by its sealed pointer alone. One that names no site used to be
+`unresolved` (`website_withdrawal_deletion_offloaded_run_binding_undetermined`)
+whatever its age, so no plan on the host could apply: on 2026-11-27 the host
+had 144 readable pointers of that kind, all offloaded by 2026-11-23 01:22:43Z,
+about 14 hours before the withdrawn site's first record there.
+
+Since 2026-11-27 such a run is cleared when its sealed evidence-offload pointer
+(`<run>.offloaded.v1.json`, status `offloaded`) says it left the host more
+than 6 hours before the site's earliest record on the host. The offload writes
+that time when it archives the whole run directory, then removes the
+directory, so the archive holds nothing written later. The site's earliest
+record is the earlier of:
+
+- the handoff listener's `started_at` in each capture's
+  `pipeline_job_ledger.json`, and the start of every attempt in its history.
+  The listener writes it at its first lease claim and carries it forward;
+- the modification time of the site directory and of everything under it.
+
+The 6 hours cover the staging a handoff does before that first claim (one
+listener pass, stopped at 6 hours by its unit) and a step of the host clock.
+Equal times stay undetermined. The first plan that finds the record seals it in
+`<site>/website_withdrawal/site_earliest_record.json`; the apply keeps the
+journal, so a plan after the apply still has it.
+
+A run stays undetermined when: its pointer is not sealed, not an evidence
+offload pointer, not `offloaded`, or has no usable time; it has a leftover
+beside it; it left less than 6 hours before the site; a capture has no readable
+ledger; or the scene workspace was retired. A pointer the service cannot read
+stays `website_withdrawal_deletion_record_unreadable`. Its file time is never
+used. The door could not open 74 pointers on 2026-11-27 (`open_failed`; the
+door reads as `blueprint`, like the unit). If the unit cannot read them either,
+the plan stays `unresolved` until the owner gives them the owner and group of
+their run root, as the offload now does for each new pointer
+(`control_plane_evidence_offload._adopt_root_owner`). Whose they are now is
+not known: the door shows no owner or mode.
+
+The rule adds nothing to what is deleted. A cleared run, its pointer and its B2
+archive stay. The plan and the receipt list each one under
+`offloaded_runs_older_than_site`, with `reason`
+(`website_withdrawal_deletion_offloaded_run_predates_site`),
+`offloaded_at_epoch` and `site_earliest_record_epoch`. The receipt's
+`remaining` counts them (`offloaded_runs_older_than_site`). An object that a
+cleared run and one of the site's runs both name is still `unresolved`.
 
 ### Alerts
 
@@ -1010,7 +1058,16 @@ Known gaps:
 - Some provider copies have no delete endpoint (below).
 - Without `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in the environment file,
   the pass does not delete the capture source bucket prefix `scenes/site-<id>/`.
-  The receipt names it under `remaining`.
+  The receipt names it under `remaining` and `incomplete_reasons`, and the site
+  stays `incomplete` with `owner_action` in its state and in `summary.json`.
+  It is not applied again until the variable is set (before 2026-11-27 it was
+  applied again every 6 hours, and from the third time failed on the
+  write-once receipt every hour). It pages as
+  `website_withdrawal_deletion_unresolved` after 72 hours. With the variable
+  set, the unit needs Google Cloud Storage credentials of its own
+  (`storage.Client()` in `GoogleWebsiteCleanupStorage`); without them every
+  pass fails and backs off. Whether the host sets either is not known: the
+  door refuses the environment file.
 
 ### Complete or incomplete
 
@@ -1026,7 +1083,8 @@ Each receipt says `deletion_status`, one of three values:
 
 The hourly passes end on the first two. `door status` counts each value
 separately (`website_withdrawal_deletion.withdrawals`). An `incomplete` site is planned
-again (after 1 h when a provider delete failed, else 6 h), and the
+again (after 1 h when a provider delete failed, else 6 h), except when only the
+capture source bucket is left and none is named (above). The
 existing alerts cover it: blocked 72 h, failing 3 times, overdue at 21 days.
 A receipt from before this field existed reads as incomplete.
 
@@ -1164,7 +1222,10 @@ an in-memory B2 store and an in-memory source bucket. It:
 
 It fails if a covered copy remains, if a policy data class has no row, if
 anything of the other site changed, or if it wrote, removed or renamed anything
-outside its temporary directory.
+outside its temporary directory. Its world also has an unrelated run offloaded
+30 days before the site came, whose sealed pointer names no site, as most
+offloaded runs on the host do. The drill fails unless the plan clears it, the
+receipt lists it, and its pointer and archive are untouched.
 
 `--automatic` runs the hourly pass on the same synthetic site instead. With no
 approval, the pass plans and deletes nothing. With a synthetic approval written

@@ -18,8 +18,10 @@ The drill walks the real path:
    that plan's digest and the explicit authorization, then the sealed receipt.
 
 It checks that every data class of the beta retention policy appears in the receipt
-as removed or remaining with a reason, and that nothing outside the site's copies
-changed, and prints one row per copy class: count before, count after, and why
+as removed or remaining with a reason, that nothing outside the site's copies
+changed (another site's run and objects, and an unrelated run offloaded before the
+site came, whose sealed pointer names no site, as most offloaded runs on the host
+do), and prints one row per copy class: count before, count after, and why
 anything remains.
 
 ``--automatic`` walks the same site through the timer's passes instead
@@ -138,6 +140,10 @@ def _capture(partition: Path, request_id: str) -> tuple[Path, dict[str, Any]]:
                        "task": "synthetic drill task"}, "context_digest")
     _write(capture / "pipeline/website_task_context.json", context)
     _write(capture / "pipeline/website_scene_preparation/preparation.json", {"scene_id": scene_id})
+    # The handoff listener's job ledger, started at its first lease claim: the site's earliest record here.
+    _write(capture / "pipeline_job_ledger.json", {
+        "schema_version": "pipeline_job_ledger.v1", "revision": 2, "status": "completed",
+        "started_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "attempt_history": []})
     source = {"capture_id": capture_id, "task_context_digest": context["context_digest"],
               "task_id": "website-" + context["context_digest"][7:27], "scene_intent_id": "synthetic"}
     return capture, source
@@ -185,6 +191,15 @@ def build_world(work: Path, request_id: str) -> dict[str, Any]:
         "retained_receipt_bytes": {"launch_receipt.json": base64.b64encode(receipt.encode()).decode()}},
         "pointer_digest"))
     _write(prepared / intent_id / "website-source/binding.json", {"intent_digest": "sha256:" + "e" * 64})
+    # An unrelated launch run offloaded 30 days before the site came, whose sealed pointer names no site, as
+    # most of the host's offloaded runs are (2026-11-27): kept, never undetermined, never touched.
+    older_name = "launch-unrelated-legacy-run-0099"
+    older_uri = _uri("control-plane-evidence", "8", "evidence.tar")
+    older = _write(launches / f"{older_name}.offloaded.v1.json", _sealed({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+        "directory": older_name, "uri": older_uri, "digest": "sha256:" + "8" * 64, "size_bytes": 21,
+        "member_count": 0, "members": [], "retained_receipt_bytes": {}, "evidence_deleted": False,
+        "offloaded_at_epoch": datetime.now(timezone.utc).timestamp() - 30 * 86400}, "pointer_digest"))
     # The other site's run and B2 object: never touched.
     other_run = launches / "launch-drill-other-construction-0003"
     _write(other_run / "launch_profile.json", {"capture_root": str(other_capture)})
@@ -196,6 +211,7 @@ def build_world(work: Path, request_id: str) -> dict[str, Any]:
     store.put(offloaded, b"offloaded evidence", versions=2)
     store.put(_uri("atlas-scene-bundle", "3", f"walkthrough-{request_id}.zip"), b"atlas preview", versions=2)
     store.put(other_uri, b"another site's review")
+    store.put(older_uri, b"an unrelated run's evidence")
     gcs = MemoryGcs([{"name": f"scenes/site-{request_id}/captures/walkthrough-{request_id}/raw/video.mp4",
                       "generation": "7", "size": 15, "crc32c": "AAAAAA=="},
                      {"name": "scenes/site-drill-other/captures/walkthrough-drill-other/raw/video.mp4",
@@ -226,7 +242,8 @@ def build_world(work: Path, request_id: str) -> dict[str, Any]:
     return {"work": work, "partition": partition, "capture": capture, "site": capture.parents[1],
             "source": source, "store": store, "gcs": gcs, "resolution": resolution,
             "site_runs": [launch, canary, prepared / intent_id], "other_run": other_run,
-            "other_capture": other_capture, "other_uri": other_uri}
+            "other_capture": other_capture, "other_uri": other_uri,
+            "unrelated_older_pointer": {"name": older_name, "path": older, "uri": older_uri}}
 
 
 def _snapshot(paths: list[Path]) -> dict[str, str]:
@@ -350,6 +367,8 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
     resolution = {**world["resolution"], "object_store": deletion.B2ObjectVersions(store, BUCKET)}
     outside = [world["other_capture"], world["other_run"]]
     outside_before = _snapshot(outside)
+    older = world["unrelated_older_pointer"]
+    older_before = older["path"].read_bytes()
     other_before = (store.versions_of(world["other_uri"]), [row for row in gcs.rows if "drill-other" in row["name"]])
 
     # Before the withdrawal the paid launch path resolves the site's capture.
@@ -385,6 +404,7 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
     # 4. The operator's plan with the object store and the source bucket, then apply exactly that plan.
     plan = deletion.plan_withdrawal_deletion(capture_root=capture, cloud_storage=gcs, **resolution)
     _check(plan["unresolved"] == [], "drill_plan_unresolved")
+    _check(_older_runs(plan) == [older["name"]], "drill_unrelated_older_run_not_recorded")
     before = {"scene_files": plan["scene_files"]["count"],
               "run_directories": sum(1 for run in plan["runs"] if run["directory"]),
               "run_pointers": sum(len(run["pointers"]) for run in plan["runs"]),
@@ -408,6 +428,8 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
 
     # Nothing outside the site's copies changed (and ``_confined`` checks nothing outside ``work`` did).
     _check(_snapshot(outside) == outside_before, "drill_touched_another_site")
+    _check(older["path"].read_bytes() == older_before and store.versions_of(older["uri"]) == 1
+           and _older_runs(receipt) == [older["name"]], "drill_touched_the_unrelated_older_run")
     _check((store.versions_of(world["other_uri"]),
             [row for row in gcs.rows if "drill-other" in row["name"]]) == other_before, "drill_touched_another_object")
     work_root = str(Path(work).absolute())
@@ -456,6 +478,8 @@ def _run_automatic_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
                   "site_index_root": index_root, "provider_copies": True, "provider_deleters": {}}
     outside = [world["other_capture"], world["other_run"], uncovered / "other-entry"]
     outside_before = _snapshot(outside)
+    older = world["unrelated_older_pointer"]
+    older_before = older["path"].read_bytes()
     withdrawal.acknowledge_withdrawal(capture_root=capture, command=command)
     approval_path = Path(work) / "etc/website-withdrawal-deletion-approval.json"
     now = time.time()
@@ -497,11 +521,25 @@ def _run_automatic_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
            "drill_automatic_copies_remaining: " + json.dumps(receipt.get("incomplete_reasons"))[:500])
     _check(_snapshot(outside) == outside_before and store.versions_of(world["other_uri"]) == 1,
            "drill_automatic_touched_another_site")
+    # The unrelated run offloaded before the site came: kept, and the receipt says why, with both times.
+    _check(older["path"].read_bytes() == older_before and store.versions_of(older["uri"]) == 1
+           and _older_runs(receipt) == [older["name"]]
+           and any(row["holder"] == "offloaded_runs_older_than_site" for row in receipt["remaining"]),
+           "drill_automatic_touched_the_unrelated_older_run")
 
     # 3. Nothing is due once the receipt is sealed.
     again = run(now + 2)
     _check(again["action"] is None and again["withdrawals"]["completed"] == 1, "drill_automatic_second_pass_acted")
     return {"plan_pass": planned, "apply_pass": applied, "idle_pass": again, "receipt": receipt}
+
+
+def _older_runs(plan_or_receipt: dict[str, Any]) -> list[str]:
+    """The runs a plan cleared as offloaded before the site came, each with its reason and both times."""
+
+    rows = (plan_or_receipt.get("offloaded_runs_older_than_site") or {}).get("runs") or []
+    return sorted(Path(row["path"]).name for row in rows
+                  if row.get("reason") == "website_withdrawal_deletion_offloaded_run_predates_site"
+                  and row.get("offloaded_at_epoch") is not None and row.get("site_earliest_record_epoch") is not None)
 
 
 def format_record(rows: list[dict[str, Any]]) -> str:

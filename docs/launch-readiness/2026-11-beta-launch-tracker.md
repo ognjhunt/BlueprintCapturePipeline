@@ -284,6 +284,22 @@ Intended design: every upload is written to one record before it is sent, and st
 - **The withdrawal (`site-capture-ceba4511…`):** acknowledged 2026-11-25 02:25Z, so its cool-off ends 2026-11-28 02:25Z. Its next plan is 2026-11-27 16:21Z (the 24-hour backoff from the old release). The first pass after both applies it. Not yet proven: no apply has run on the host.
 - **Still open for a complete deletion:** `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` is not known to be set on the host. Without it the source bucket prefix stays and the receipt names it under `remaining`. Read the first receipt before changing that.
 
+## The withdrawal plan no longer waits on offloaded runs older than the site (2026-11-27)
+
+- **Found by an offline proof on 2026-11-27:** the hourly pass never reads offloaded archives, so a pointer-only run whose sealed pointer names no site was always `unresolved` (`website_withdrawal_deletion_offloaded_run_binding_undetermined`). With any such row the pass never applies. The host has 144 readable pointers of that kind. So the one withdrawal (`site-capture-ceba4511…`) would have stayed `unresolved`, planned again every 6 hours, until the overdue page on 12-16 and past the 30-day promise on 12-25.
+- **Read through the door (read-only) on 2026-11-27:** the newest readable no-site pointer says it was offloaded at 2026-11-23 01:22:43Z. The site's earliest record is 15:22:49Z that day (the oldest file time under the site; the job ledger's `started_at` is 15:22:51Z). That is about 14 hours later. There is no workspace retirement receipt for the site.
+- **What changed:**
+  - a pointer-only run that names no site is cleared when its sealed evidence-offload pointer says it left the host more than 6 hours before the site's earliest record there. That record is the earlier of the listener's job ledger times and every file time under the site. Equal times, a missing or odd time, another pointer kind, a leftover, an unreadable ledger or a retired workspace keep the run undetermined;
+  - the rule only takes rows off the unresolved list. A cleared run, its pointer and its archive stay. The plan and the receipt list each one with its reason and both times;
+  - the first plan seals the site's earliest record in the withdrawal journal, so a plan after the apply, when the ledger is gone, still has it;
+  - an apply left `incomplete` only for want of the source bucket is not applied again until the bucket is named. Before, it wrote a second receipt 6 hours later and from the third try failed every hour on the write-once receipt (`lifecycle_artifact_conflict`), without ever reaching the failing alert. Now there is one receipt, and the state and `summary.json` carry `owner_action`;
+  - the drill's world has an unrelated older run, and the drill fails unless it is cleared and left untouched.
+- **Tests:** a host-shaped plan resolves; the hourly pass plans, waits out a 72-hour cool-off, applies and keeps the older runs; each unsafe case stays undetermined; the source bucket case writes one receipt and finishes once the bucket is set. Runbook: `docs/runbooks/beta-operations.md` section 8, "Offloaded runs older than the site".
+- **Not proven, and still open:**
+  - not deployed. Until it is, the plan due after 2026-11-27 16:21Z ends `unresolved`.
+  - The door could not open 74 other pointer-only runs (`open_failed`). The door reads as `blueprint`, as the unit does. If the unit cannot read them either, the plan stays `unresolved` on `website_withdrawal_deletion_record_unreadable` until the owner gives them their run root's owner and group. Their file times are not used.
+  - Whether the host sets `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET`, and whether the unit has Google Cloud Storage credentials, is not known. Without the bucket the receipt is `incomplete` and the site pages as `website_withdrawal_deletion_unresolved` after 72 hours. With the bucket but no credentials every pass fails and backs off.
+
 ## The host's state backup needs no hand-installed secret (2026-11-26)
 
 - **Owner decision, 2026-11-26:** on the readiness check's finding that the control plane's state had no backup, "i approve - lets fix this for now and future". Asked how, the owner chose a key pair made in that session and the B2 bucket the host already uses.
