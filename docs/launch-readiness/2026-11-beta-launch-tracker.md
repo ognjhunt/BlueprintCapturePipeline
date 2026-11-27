@@ -307,6 +307,15 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Fix:** `classify_path`, which the backup asks about every file, compared the path with all 145 storage roots and split each root's path again on every call. It now keeps the answer per directory. Measured on 12,000 record files: 0.58 ms of CPU a file before, 0.105 ms after. A test compares it with the plain rule on over 500 paths.
 - **Fourth run, 02:08Z to 02:19Z on `439ebdb` ([#3766](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3766)):** 189,689 files in the same ten minutes and 3.2 CPU minutes, and `incomplete` at the time bound again. 149,169 of those files were under `sam31-preparation-executions/`: its queue holds 486 records, and `watchdog-cgroup-cleanup/` beside them holds 148,683 one-line sweep receipts, the last written 2026-11-12.
 - **Fix:** that folder is left out and counted, and a run's time bound is 20 minutes (the unit's start timeout 30). With it and `billing-audit/` left out, the roots walked so far hold about 40,000 files and 0.5 GB.
+- **First complete backup, 2026-11-27 02:56:52Z to 03:00:54Z on `b22546f` ([#3767](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3767)):** `g-20261127T025654406120Z-9e7008ad`, `complete` and `sealed` in the ledger.
+  - 75 roots, 72,944 files, 1.01 GB before packing, 23 parts, in four minutes and 1.7 CPU minutes.
+  - Sealed to `sha256:0cc6f1c5…e956b8`, the owner's public key.
+  - Retention ran and found nothing older to delete; no withdrawal purge was pending.
+  - Largest roots: `beta-policy-screening-work` 313 MB (15,189 records; 16,347 files that are not records left out), `scene-project-spend` 211 MB, `task-evaluation-configured-controls` 82 MB, `task-evaluation-scene-intents` 81 MB. Most files: `completed-replay-cache-retention`, 25,292.
+  - The unit's failed state cleared and the timer is armed hourly.
+- **Alerts this work raised:** the unit failed four times (23:43Z, 00:55Z, 01:32Z, 02:19Z), each reported by the failure notifier, and `control_plane_backup_stale` was in the capacity summary of 02:56:58Z, three hours after the first attempt and four minutes before the first complete run ended. The timer was stopped through the door between runs so that it did not fail on its own schedule.
+- **Deploys on 2026-11-27 for this, outside the D-08 window (each `commit_proven`, no blockers):** `f7d9d80` by 00:30Z, `df641f5` by 01:22Z, `439ebdb` by 02:08Z, `b22546f` by 02:56Z. No paid launch lock was held and the door queue was empty before each.
+- **Still not done:** no restore has run. The drill needs the owner's private key (runbook, last section). At one run an hour and seven days kept, the bucket holds about 168 generations.
 
 ## Metering and retry rollout on 2026-11-20
 
