@@ -51,7 +51,7 @@
    "object_generated": "The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are the generator's estimate, not a scan or a measurement.",
    "object_designed": "The job's object was not filmed: it is a simple shape Blueprint designed for the job.",
    "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
-   "scored_only_object_02": "success_rule.json scores only the job's object, /World/Object. /World/Object_02 is also the job's objects, placed where the video shows them; the rule does not score it.",
+   "scored_only_object_02": "success_rule.json scores only the job's object, /World/Object. /World/Object_02 is also one of the job's objects, placed where the video shows it; the rule does not score it.",
    "further_held_object_02_carton_parametric": "The package also holds /World/Object_02 (carton): a plain carton shape Blueprint made for it, sized from the video, with none of the real object's detail. It stands where the video shows it; that position is an estimate from the video, not a measurement.",
    "further_held_object_02_mug_box_library": "The package also holds /World/Object_02 (mug box): a model of the same kind of object from a public library, picked and sized from the video and credited under Library models; it is not the site's own object. It stands where the video shows it; that position is an estimate from the video, not a measurement.",
    "estimates_from_video": "The object's mass range in success_rule.json comes from its size in the video and typical densities; its friction range is Blueprint's standard default.",
@@ -1320,7 +1320,7 @@
      "variations_object_size_and_mass_video_estimate",
      "variations_object_02_size_mass_video_estimate_friction_default"
     ],
-    "readme_sha256": "sha256:b360f436103eb2e52bb7e3a241966486cce72068a526372030e99a4ca4753fb9"
+    "readme_sha256": "sha256:0a485dd3060b005a8a74b03f1e6c79cd30b5d49092e98ea36a75ad2291983c70"
    }
   },
   {
@@ -1379,7 +1379,7 @@
      "library_credit_mug_box_object_02_and_variations",
      "library_carve_out"
     ],
-    "readme_sha256": "sha256:2c305512bc5674b5deb88b520e547308c614a3a583b382266461f8fa5e2fcf2b"
+    "readme_sha256": "sha256:915930dafa04fb6ad6ede4448e1c95af74a0d01f4d035fdb75c29342c194fe56"
    }
   },
   {
