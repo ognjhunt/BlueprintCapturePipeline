@@ -301,6 +301,8 @@ Intended design: every upload is written to one record before it is sent, and st
   - `latest.json` was private to root, so `door cat` refused it and the per-root sizes could not be read.
   - The timer was stopped through the door (`20261126T234614Z-unit-56528866`) until the fix is live; a door hold on it is refused (`hold_unit_profile_refused`).
 - **Fix:** gzip level 1 (about five times the records per CPU second), the run's reports readable like the ledger, the timer hourly instead of every 15 minutes, and the stale page at three hours. Each run reads and uploads all of the state, so the cadence is what CPU, outbound transfer and the bucket pay for. The full size is not known until a run completes.
+- **Second run, 2026-11-27 00:43Z to 00:55Z on `f7d9d80` ([#3764](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3764)):** `incomplete` again at the time bound, after 51,090 files and 5.19 GB. Its report, now readable, names the cause: 5.16 GB and 48,141 files of that were under `gpu_spend_guard/`, still unfinished. `billing-audit/` there holds 72,235 folders of raw provider billing responses, about 1.4 MB each, and `metered-call-events/` 31,655 folders of the reconciler's call log.
+- **Fix:** those two folders are left out of the backup and counted in each report. The spend ledger, the admission lock, the billing export and the daily snapshot beside them stay in. A lost host loses that history of raw provider responses; the next reconciler run refetches what admission needs.
 
 ## Metering and retry rollout on 2026-11-20
 

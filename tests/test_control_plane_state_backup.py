@@ -177,6 +177,28 @@ def test_site_data_is_never_in_a_backup_even_when_present_on_disk(host, tmp_path
     assert skipped["/opt/blueprint/task-evaluation-control-plane-releases"] == "rebuildable_release"
 
 
+def test_the_billing_reconcilers_evidence_trail_is_left_out_and_counted_and_the_ledger_beside_it_is_kept(host, tmp_path):
+    guard = f"{CP}/gpu_spend_guard"
+    for stamp in ("20261127T004422.843839Z", "20261127T005556.990412Z"):
+        _write(host, f"{guard}/billing-audit/{stamp}/response-001-vast.json", b'{"invoices": []}' * 4096)
+        _write(host, f"{guard}/billing-audit/{stamp}/provider_billing_source_receipt.json", b'{"receipt": 1}')
+    _write(host, f"{guard}/metered-call-events/4fdd11dd/14f6a3f9.attempted.json", b'{"call": 1}')
+    _write(host, f"{guard}/paid_spend_admission_lock.json", b'{"status": "open"}')
+    store = FakeStore()
+    report = _run(host, store, tmp_path)
+    assert report["status"] == "complete"
+    # Each of the two folders is left out whole, however much it holds, and the report says so.
+    counts = report["roots"][f"/{guard}"]
+    assert counts["excluded"] == {"excluded_by_allowlist": 2}
+    drill = tmp_path / "drill"
+    backup.restore(store=store, key=KEY, fs_root=drill)
+    assert (drill / guard / "spend_ledger.json").read_bytes() == STATE[f"{guard}/spend_ledger.json"]
+    assert (drill / guard / "paid_spend_admission_lock.json").read_bytes() == b'{"status": "open"}'
+    assert not (drill / guard / "billing-audit").exists() and not (drill / guard / "metered-call-events").exists()
+    root = next(item for item in backup.ALLOWLIST if item.path == f"/{guard}")
+    assert root.exclude == ("billing-audit", "metered-call-events") and "not backed up" in root.reason
+
+
 def test_no_allowlisted_root_is_site_data():
     for root in backup.ALLOWLIST:
         if "website_withdrawal" in root.path or root.path.endswith(".retired.v1.json"):
