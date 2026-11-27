@@ -64,9 +64,10 @@ def cat_json(path: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def ls(path: str) -> list[dict]:
+def ls(path: str, match: str | None = None) -> list[dict]:
     try:
-        return list(door._json("GET", "/fs/list", {"path": path}).get("entries") or [])
+        return list(door._json("GET", "/fs/list", {"path": path, **({"match": match} if match else {})})
+                    .get("entries") or [])
     except door.DoorError:
         return []
 
@@ -96,6 +97,20 @@ def capture_root(job: dict) -> str | None:
     return None
 
 
+def retired_receipt(job: dict) -> dict | None:
+    """The scene's retirement receipt beside the scenes, found by its name (``<scene>.retired.v1.json``), when storage
+    retention retired the job's workspace. Named only: the door does not serve the receipt (it holds credential-shaped
+    fields), so it is not verified here as the door's slot rule verifies it on the host
+    (``website_scene_workspace_retention.retired_capture_ended``), and nothing is said of how the job ended."""
+    name = f"site-{job['job_id']}.retired.v1.json"
+    for bucket in ls(HANDOFFS):
+        scenes = f"{HANDOFFS}/{bucket['name']}/scenes"
+        for entry in ls(scenes, match=name):
+            if entry.get("name") == name and entry.get("type") == "file":
+                return {"path": f"{scenes}/{name}", "mtime": entry.get("mtime")}
+    return None
+
+
 def _names_capture(intent: dict | None, capture_id: str) -> bool:
     try:
         return intent_capture(intent["request"]) == capture_id
@@ -109,6 +124,9 @@ def job_report(job: dict, status: dict) -> dict:
     times, stage, failure = {"submitted": job.get("submitted_at")}, "submitted" if job.get("job_id") else "not_submitted", None
     kind = manifest = None
     handoff: dict = {}
+    retired = retired_receipt(job) if job.get("job_id") and not root else None
+    if retired:
+        stage, times["workspace_retired"] = "workspace_retired", retired["mtime"]
     if root:
         stage = "handed_off"
         ledger = cat_json(f"{root}/pipeline_job_ledger.json") or {}
@@ -150,7 +168,8 @@ def job_report(job: dict, status: dict) -> dict:
         failure = failure or manifest.get("refused") or (refused.get("reason") if isinstance(refused, dict) else None)
         if manifest.get("delivered"):
             stage = "package_delivered"
-    if not failure and stage != "package_delivered" and time.time() - (job.get("submitted_at") or 0) > IN_FLIGHT_FOR_SECONDS:
+    if not failure and stage not in ("package_delivered", "workspace_retired") \
+            and time.time() - (job.get("submitted_at") or 0) > IN_FLIGHT_FOR_SECONDS:
         failure = "stalled: no package and no ending after the door's in-flight window"
     ids = {job.get("job_id"), job.get("capture_id")} - {None}
     spend = [{key: entry.get(key) for key in ("job_id", "by_provider_settled_usd", "held_usd", "settled_usd")}
@@ -160,7 +179,8 @@ def job_report(job: dict, status: dict) -> dict:
     return {**row, "kind": kind, "stage": stage, "times": times, "spend": spend, "first_failure": failure,
             "preparation": {key: handoff.get(key) for key in ("status", "blockers")} if handoff else None,
             "package_revision": (manifest or {}).get("simulation_revision"), "zip_digest": package.get("digest"),
-            "package_files": package.get("files"), "permission": (manifest or {}).get("permission")}
+            "package_files": package.get("files"), "permission": (manifest or {}).get("permission"),
+            **({"retired_receipt": retired["path"]} if retired else {})}
 
 
 def door_key(run_id: str, label: str) -> str:
@@ -169,7 +189,7 @@ def door_key(run_id: str, label: str) -> str:
 
 
 def done(report: dict) -> bool:
-    return report["stage"] in ("package_delivered", "not_submitted") or bool(report["first_failure"])
+    return report["stage"] in ("package_delivered", "not_submitted", "workspace_retired") or bool(report["first_failure"])
 
 
 def submit(args: argparse.Namespace, state: dict) -> None:

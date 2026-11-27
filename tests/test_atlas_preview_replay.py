@@ -200,6 +200,29 @@ def test_a_refusal_after_looking_for_an_unpulled_record_names_it(site, monkeypat
     assert str(site.job.parent / "work/scratch.png") not in report["absent_paths_probed"]
 
 
+def test_a_path_looked_for_by_resolving_or_stat_is_named_as_unpulled(site, monkeypatch):
+    """Stress test, 2026-11-27: the package compile checks each scene asset with ``Path.resolve(strict=True)``
+    (``website_company_simulation._inside``), which the replay did not watch, so an asset it never pulled read as
+    ``website_company_simulation_asset_not_shipped`` on a job the host had delivered. A failed strict resolve or stat
+    is a path the code looked for and did not find, as a false ``exists`` is."""
+    def step(*, output_root, **_):
+        try:
+            (output_root / "assets/scene_collision.usd").resolve(strict=True)
+        except OSError:
+            pass
+        (output_root / "assets/scene_appearance.usd").resolve()  # not strict: it looks for nothing
+        try:
+            (output_root / "assets/object.usd").stat()
+        except OSError:
+            raise ValueError("scene_stage_asset_not_shipped") from None
+    _controller(monkeypatch, step)
+    report = _run(site)
+    assert report["first_stop"]["code"] == "scene_stage_asset_not_shipped"
+    assert report["first_stop"]["unpulled_before"][-2:] == [str(site.job.parent / "assets/scene_collision.usd"),
+                                                           str(site.job.parent / "assets/object.usd")]
+    assert str(site.job.parent / "assets/scene_appearance.usd") not in report["absent_paths_probed"]
+
+
 def test_an_unstubbed_network_call_fails_loudly_even_where_the_controller_catches_errors(site, monkeypatch):
     import urllib.request
 

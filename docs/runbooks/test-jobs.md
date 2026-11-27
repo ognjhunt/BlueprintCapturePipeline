@@ -154,7 +154,9 @@ shows as `preparation:awaiting_reconstruction`, not the ledger's `failed_retryab
 shown" when `door status`, which lists only its top jobs, does not name the job), the first failure code
 (including a package the website refused, `held:<code>` for a preparation that ended on a hold, naming what the
 site would have been asked, and "stalled" for a job with no package and no ending after 7 days) and the start of
-the zip digest. The JSON adds the footage id, job and capture ids, times (asked
+the zip digest. A job whose workspace storage retention retired reads `workspace_retired`, with the scene's
+`<scene>.retired.v1.json` named in the JSON (`retired_receipt`): the door does not serve that receipt, so the report
+names it without verifying it and says nothing of how the job ended. The JSON adds the footage id, job and capture ids, times (asked
 for, job ledger last changed, package built), spend by provider (settled and held, from `door status`, matched by
 job or capture id), the handoff's status and blocker codes (`preparation`), the package's file names
 (`package_files`) and its `permission` (`internal_test`, with the label). The package manifest does not record
