@@ -504,6 +504,29 @@ def test_plan_only_derived_root_is_never_evicted_by_apply(tmp_path) -> None:
     assert candidate.exists()
 
 
+def test_each_applied_run_makes_the_evidence_roots_pointers_readable_even_with_offload_off(tmp_path, monkeypatch):
+    """2026-11-27: 75 pointers the ``blueprint`` service user could not read kept a withdrawal unresolved. The
+    clean-up unit (root) repairs them on every applied run, whether or not offload is on; a dry run only
+    names them."""
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    evidence = tmp_path / "launch-runs"
+    evidence.mkdir()
+    stale = evidence / "run-1.offloaded.v1.json"
+    stale.write_text("{}", encoding="utf-8")
+    stale.chmod(0o400)
+    monkeypatch.setattr(offload, "_pointer_owner", lambda directory: (evidence.stat().st_uid, 4242))
+    chowned = []
+    monkeypatch.setattr(offload.os, "fchown", lambda fd, user, group: chowned.append(group))
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
+                  evidence_roots=[evidence], now=lambda: 30_000_000.0, classifier=_noclass)
+    planned = run_storage_gc(**common, apply=False)
+    assert planned["pointer_access"] == {"applied": False, "repaired": [str(stale)], "failed": []} and chowned == []
+    applied = run_storage_gc(**common, apply=True, ack=RUN_ACK, offload_enabled=False)
+    assert applied["pointer_access"] == {"applied": True, "repaired": [str(stale)], "failed": []}
+    assert chowned == [4242] and stale.stat().st_mode & 0o777 == 0o440
+
+
 def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -> None:
     evidence = tmp_path / "launch-runs"
     run = evidence / "run-1"
