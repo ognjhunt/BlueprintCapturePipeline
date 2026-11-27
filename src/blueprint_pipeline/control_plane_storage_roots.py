@@ -49,6 +49,7 @@ from __future__ import annotations
 
 
 import fnmatch
+import functools
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -275,19 +276,58 @@ def _specificity(root_parts: tuple[str, ...]) -> tuple[int, int]:
     return len(root_parts), sum(len(part.replace("*", "")) for part in root_parts)
 
 
-def classify_path(path: str) -> StorageRoot | None:
-    """Return the most specific classified root containing ``path``."""
+@functools.lru_cache(maxsize=None)
+def path_parts(path: str) -> tuple[str, ...]:
+    """A root's path split into components, kept: classifying a path compares it with every root, and a caller
+    that classifies each file of a tree (the state backup) spent most of its time splitting the same root
+    paths again."""
 
-    candidate = PurePosixPath(str(path)).parts
+    return PurePosixPath(path).parts
+
+
+def _most_specific(candidate: tuple[str, ...], roots: tuple[StorageRoot, ...]) -> StorageRoot | None:
+    """The most specific of ``roots`` that is or contains the candidate; the first listed wins a tie."""
+
     best: StorageRoot | None = None
     best_rank: tuple[int, int] = (-1, -1)
-    for root in STORAGE_ROOTS:
-        root_parts = PurePosixPath(root.path).parts
+    for root in roots:
+        root_parts = path_parts(root.path)
         if _contains(root_parts, candidate):
             rank = _specificity(root_parts)
             if rank > best_rank:
                 best, best_rank = root, rank
     return best
+
+
+@functools.lru_cache(maxsize=8192)
+def _directory_view(directory: tuple[str, ...]) -> tuple[StorageRoot | None, tuple[StorageRoot, ...]]:
+    """What every entry directly inside ``directory`` shares: the most specific root that is or contains the
+    directory, and the roots exactly one component longer, which alone can name one of its entries."""
+
+    deeper = tuple(root for root in STORAGE_ROOTS
+                   if len(path_parts(root.path)) == len(directory) + 1
+                   and _contains(path_parts(root.path)[:-1], directory))
+    return _most_specific(directory, STORAGE_ROOTS), deeper
+
+
+def classify_path(path: str) -> StorageRoot | None:
+    """Return the most specific classified root containing ``path``.
+
+    A root contains a path when it is the path or one of its ancestors. A root as long as the path outranks
+    every shorter one (``_specificity``), so the answer is the root that names the path itself when there is
+    one, and otherwise the answer for its directory, which is kept per directory: the state backup classifies
+    each of about a hundred thousand files an hour, and comparing all the roots for every file was most of
+    its CPU time (the run of 2026-11-27 01:22Z stopped at its time bound after 100,641 files)."""
+
+    candidate = PurePosixPath(str(path)).parts
+    if len(candidate) < 2:
+        return _most_specific(candidate, STORAGE_ROOTS)
+    shared, deeper = _directory_view(candidate[:-1])
+    if deeper:
+        named = _most_specific(candidate, deeper)
+        if named is not None:
+            return named
+    return shared
 
 
 def roots_of_class(storage_class: str) -> tuple[str, ...]:
