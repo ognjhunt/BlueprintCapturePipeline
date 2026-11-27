@@ -264,8 +264,8 @@ def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:
 
 #: The rule of a package that also places further objects of the job (``scene_package_stage.neutral_rule``'s
 #: ``scored_object`` and ``not_scored``): it scores the one object, and says so.
-SCORED_ONLY_NOTE = ("success_rule.json scores only the job's object, {scored}. {others} {are} also the job's objects, "
-                    "placed where the video shows them; the rule does not score {them}.")
+SCORED_ONLY_NOTE = ("success_rule.json scores only the job's object, {scored}. {others} {are} also {kind}, "
+                    "placed where the video shows {them}; the rule does not score {them}.")
 
 
 def _joined(items: list[str]) -> str:
@@ -284,6 +284,7 @@ def object_note(source: Mapping[str, Any]) -> list[str]:
     if others and isinstance(rule.get("scored_object"), str):
         found.append(SCORED_ONLY_NOTE.format(scored=rule["scored_object"], others=_joined(others),
                                              are="is" if len(others) == 1 else "are",
+                                             kind="one of the job's objects" if len(others) == 1 else "the job's objects",
                                              them="it" if len(others) == 1 else "them"))
     return found
 

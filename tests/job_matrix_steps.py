@@ -15,7 +15,10 @@ Fixtures reused, not copied (a re-base only has to keep these names):
   ``_stance_raises``, ``_packet_raises``, ``_sealed_doc``);
 - the zip: ``tests/test_website_company_simulation`` ``Job``, ``World``, ``_package``;
 - the room package (navigation, an unknown kind): ``tests/test_website_scene_handoff_navigation.room_job``, the real
-  handoff on real fixture geometry onto that ``Job``'s capture.
+  handoff on real fixture geometry onto that ``Job``'s capture;
+- several objects in one job: ``tests/test_website_further_objects`` (``_job``, ``_entry``, ``_revision``,
+  ``_in_room``) and ``tests/test_website_further_objects_removal`` (``_reviewed``, ``_handoff``), the real v3 decision
+  and scene handoff onto that ``Job``'s capture.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ import json
 import re
 import time
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -209,8 +212,60 @@ def _recorded(compiled: Mapping[str, Any], work: Path, patches: pytest.MonkeyPat
     return {"status": recorded["robot_free_probe"]["status"], "enqueued": enqueued}
 
 
-def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The website worker's real compile (``WEBSITE_COMPILE``) of the fixture revision named by the row."""
+def company_capture(work: Path) -> Path:
+    """The capture ``company_zip`` builds its ``Job`` on (``tests/test_website_company_simulation.Job``), under the
+    zip step's own folder ``work``: a several-object job's Atlas decision and handoff are written there first."""
+    from tests.test_website_company_simulation import CAPTURE, SITE
+    return work / "download" / f"storage/source-bucket/scenes/{SITE}/captures/{CAPTURE}"
+
+
+def further_job(names: Sequence[str], capture: Path, patches: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Several objects in one job (several objects per job, stage 5): the v3 decision the Atlas job seals (the real
+    ``job_object_review`` on the clean plate's entries; the plan model's answer stood in: the cup first, then ``names``
+    with their sourcing in ``tests/test_website_further_objects_removal.SOURCING``), then the real scene handoff
+    (``prepare_website_scene_handoff``: ``apply_to_removal``, ``sealed_inputs`` and the preparation's compile, which
+    places, authors, checks and composes each further object the decision took out of the scan) on
+    ``tests/test_website_further_objects``' cup on its table, written into ``capture``. Returns the handoff's result,
+    its preparation's path and the further objects a website revision of that preparation names
+    (``team_scene_packet.further_objects_for``), set beside the compile fixture room's task object (``_in_room``: only
+    their poses move, never their files or ids)."""
+    from blueprint_pipeline import website_library_catalog as library_catalog
+    from blueprint_pipeline.team_scene_packet import further_objects_for
+    from tests import test_website_further_objects as fo
+    from tests import test_website_further_objects_removal as removal
+
+    # The two test modules' own autouse fixtures: the deployed catalog allows the fixture's model under the license it
+    # was chosen under, and the fixture's objects are labelled in plain object words.
+    patches.setattr(library_catalog, "catalog", lambda *_, **__: [{"id": fo.ENTRY_ID, "license": "CC-BY-4.0"}])
+    for target, label in (("artisan-1", "toy"), ("overlap-1", "bowl"), ("can-1", "can")):
+        patches.setitem(fo.LABELS, target, label)
+    unknown = sorted(set(names) - (set(fo.LABELS) - {"cup-1"}))  # the cup is the job's own, scored object
+    if unknown or not names or len(set(names)) != len(names):
+        raise ValueError(f"matrix compile.further_objects names no fixture object: {unknown or list(names)}")
+    # An object with a filmed place in the fixture's frames gets its masks; any other is on the clean plate's removal
+    # manifest only, as the removal tests add the can.
+    filmed = [name for name in names if name in fo.COLUMNS]
+    arguments = fo._job(capture / "pipeline" / "fixture", filmed)
+    arguments["removal_manifest"]["entries"] += [fo._entry(name, fo.LABELS[name]) for name in names
+                                                 if name not in filmed]
+    decided, _consumed = removal._reviewed(capture, arguments, list(names), patches)
+    if "mug-1" in names:
+        # The mug box's library pick (the fixture's box model and credit), sealed where the handoff's library step
+        # keeps each further object's, as the v3 removal test seals it.
+        from blueprint_pipeline.website_preparation_revision import workspace
+        plan_row = next(row for row in decided["build_plan"]["plan"]["objects"] if row["target_id"] == "mug-1")
+        fo._seal_pick(workspace(capture) / "object_library", plan_row, arguments["task_context"])
+    result = removal._handoff(capture, arguments, patches)
+    found = further_objects_for(capture, fo._revision(capture)).get("further_objects")
+    return {"handoff": result, "preparation_path": result.get("preparation_path"),
+            "further_objects": fo._in_room(found) if found else None}
+
+
+def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch,
+                    capture: Path | None = None) -> dict[str, Any]:
+    """The website worker's real compile (``WEBSITE_COMPILE``) of the fixture revision named by the row; with
+    ``compile.further_objects``, the half compiled with the further objects the job's own preparation composed
+    (``further_job``, written into ``capture``)."""
     from blueprint_pipeline import team_scene_packet as tsp
     from blueprint_pipeline import team_scene_packet_worker as worker
     from blueprint_pipeline import team_scene_robot_absent as absent
@@ -262,6 +317,24 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
         # handoff's route is tested in tests/test_website_scene_handoff.py).
         inputs["rule_withheld"] = {"code": spec["rule_withheld"]}
         feed += ", compiled with the rule withheld (" + spec["rule_withheld"] + ")"
+    several: dict[str, Any] = {}
+    if spec.get("further_objects"):
+        if capture is None or articulated or spec.get("case") == "owner":
+            raise ValueError("matrix compile.further_objects needs a rigid half and the zip's capture")
+        several = further_job(spec["further_objects"], capture, patches)
+        feed += (", and the job's own preparation for the cup and " + ",".join(spec["further_objects"])
+                 + " (tests/test_website_further_objects' cup on its table): the v3 decision job_object_review seals "
+                 "(the plan model's answer stood in; no host can author a paid further object, "
+                 "website_further_artisan.installed_runner, so none is reserved) and the real scene handoff and "
+                 "compile, written into the zip's capture")
+        if several["handoff"].get("status") != "intake_ready":
+            return _row("stopped", stop=_stop("refusal", str((several["handoff"].get("blockers")
+                                                              or [several["handoff"].get("status")])[0])[:200]),
+                        fed_from=feed)
+        if several["further_objects"]:
+            inputs["further_objects"] = several["further_objects"]
+            feed += ("; the half compiled with the further objects that preparation names "
+                     "(team_scene_packet.further_objects_for), their poses moved beside this room's task object")
     try:
         compiled = tsp.materialize_team_scene(**inputs, output_root=work / "half" / "scene",
                                               **dict(worker.WEBSITE_COMPILE))
@@ -278,7 +351,17 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
                 robot_station_absent=(record.get(absent.FIELD) or {}).get("reason"),
                 robot_free_probe=probe["status"],
                 assumed_thresholds=bool(record.get(assumption.FIELD)),
-                physics_check=(source or {}).get("physics_check"))
+                physics_check=(source or {}).get("physics_check"),
+                **({"preparation_path": several["preparation_path"], "half_further_objects": record.get("further_objects"),
+                    "preparation_further_objects": _further_summary(several["preparation_path"])} if several else {}))
+
+
+def _further_summary(path: str | Path) -> dict[str, Any]:
+    """What the job's own preparation did with each further object (``website_further_objects.compose``), in short."""
+    record = json.loads(Path(path).read_text()).get("further_objects") or {}
+    return {"objects": [[row["rank"], row["target_id"], row["prim_path"], row["source"]] for row in record.get("objects") or []],
+            **{key: [[row["rank"], row["target_id"], row["reason"]] for row in record.get(key) or []]
+               for key in ("left_in_scan", "removed_not_built")}, "flags": record.get("flags") or []}
 
 
 def room_handoff(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -319,11 +402,13 @@ def room_handoff(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch
 
 
 def readme_variant(readme: str, physics_check: str | None, sentences: Mapping[str, Any]) -> list[str]:
-    """What the README's "How it was made" section says, read exactly: the matrix file's fixed text, then the
-    sentences of one physics check, then the notes, in the package's order, and nothing else. The compile's
-    ``physics_check`` when its sentences are the ones there, then each note; any other text is named in full. The
-    sentences are the matrix file's own literals, never the package's constants, so a changed or added sentence
-    fails a row until its expectation is changed on purpose."""
+    """What the README's "How it was made" section says, read exactly: the matrix file's fixed text, then the build
+    plan's notes (``plan_`` names: a job whose Atlas decision the capture holds; the README puts them first,
+    ``website_company_readme.readme``), then the sentences of one physics check, then the other notes, in the
+    package's order, and nothing else. Each plan note, then the compile's ``physics_check`` when its sentences are the
+    ones there, then each other note; any other text is named in full. The sentences are the matrix file's own
+    literals, never the package's constants, so a changed or added sentence fails a row until its expectation is
+    changed on purpose."""
     section = readme.split("\nHow it was made\n", 1)[-1].split("\nTerms\n", 1)[0]
     # The notes sit under their own heading, one bullet each: read as words, in order.
     rest = " ".join(" ".join(line[2:] if line.startswith("- ") else line for line in section.splitlines()
@@ -331,12 +416,19 @@ def readme_variant(readme: str, physics_check: str | None, sentences: Mapping[st
     if not rest.startswith(sentences["made"]):
         return [f"unexpected_text:{rest}"]
     rest = rest[len(sentences["made"]):].strip()
+    variant = []
+    for note, sentence in sentences["notes"].items():
+        if note.startswith("plan_") and rest.startswith(sentence):
+            variant.append(note)
+            rest = rest[len(sentence):].strip()
     physics = sentences["physics_check"]
     said = max((" ".join(words) for words in physics.values() if rest.startswith(" ".join(words))), key=len)
     rest = rest[len(said):].strip()
     agrees = said == " ".join(physics.get(physics_check or "none", ()))
-    variant = [(physics_check or "no_check_sentence") if agrees else f"readme_disagrees_with:{physics_check}"]
+    variant.append((physics_check or "no_check_sentence") if agrees else f"readme_disagrees_with:{physics_check}")
     for note, sentence in sentences["notes"].items():
+        if note.startswith("plan_"):
+            continue
         found = re.match(r"(\d+ )?" + re.escape(sentence), rest)
         if found:
             variant.append(note)
@@ -423,6 +515,15 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
             feed += " + a base scene beside it recording an estimated destination surface"
     elif zip_spec.get("surface_estimated"):
         raise ValueError("matrix zip.surface_estimated needs zip.object_source: it is read beside the bound preparation")
+    if compiled.get("preparation_path"):
+        # Several objects in one job: the half bound to the preparation the job's own handoff wrote in this capture
+        # (``further_job``), as a compile binds a website revision's (preparation_sha256); its Atlas decision is there.
+        preparation = Path(compiled["preparation_path"])
+        if zip_spec.get("object_source") or not preparation.resolve().is_relative_to(job.capture.resolve()):
+            raise ValueError("matrix compile.further_objects binds the handoff's own preparation in the zip's capture, "
+                             "never zip.object_source's")
+        change["preparation_sha256"] = "sha256:" + hashlib.sha256(preparation.read_bytes()).hexdigest()
+        feed += " + the half bound to the preparation the job's own handoff wrote, with its v3 decision"
     if change:
         value = {**json.loads(record_path.read_text()), **change, "inputs_digest": ""}
         value = {key: item for key, item in value.items() if item is not None or key not in change}
@@ -471,7 +572,8 @@ def run_variation(row: Mapping[str, Any], work: Path, replay: Mapping[str, Any])
         ("completion_enqueue", lambda: replayed(downstream, replay, missing=(
             "no completion harness takes this chain's own revision; the no-probe rule is read on the compile")
             if row["scene"] == "host_chain" else "no replay record for this job kind's completion")),
-        ("website_compile", lambda: website_compile(row, work / "compile", patches)),
+        ("website_compile", lambda: website_compile(row, work / "compile", patches,
+                                                    capture=company_capture(work / "zip"))),
         ("company_zip", lambda: company_zip(row, steps["website_compile"], work / "zip")),
     ]
     try:

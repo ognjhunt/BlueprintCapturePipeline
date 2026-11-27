@@ -258,3 +258,16 @@ def test_the_readme_says_what_the_job_s_object_is_one_plain_note_per_source(tmp_
     with zipfile.ZipFile(tmp_path / "p.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
     assert note in readme and not any(other in readme for other in others)
+
+
+@pytest.mark.parametrize(("not_scored", "sentence"), [
+    (["/World/Object_02"], "success_rule.json scores only the job's object, /World/Object. /World/Object_02 is also one "
+                           "of the job's objects, placed where the video shows it; the rule does not score it."),
+    (["/World/Object_02", "/World/Object_03"], "success_rule.json scores only the job's object, /World/Object. "
+     "/World/Object_02 and /World/Object_03 are also the job's objects, placed where the video shows them; the rule does "
+     "not score them."),
+])
+def test_the_scored_only_note_reads_in_the_singular_and_the_plural(not_scored, sentence):
+    """Stress test, 2026-11-27: one further object read "/World/Object_02 is also the job's objects, placed where the
+    video shows them" (the matrix row several-objects-carton-built-free)."""
+    assert half.object_note({"rule": {"scored_object": "/World/Object", "not_scored": not_scored}}) == [sentence]
