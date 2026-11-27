@@ -71,8 +71,9 @@ def test_cloud_unknown_acknowledgement_replays_exact_remaining_generations(tmp_p
     assert len(storage.deleted) == 1
 
 
-@pytest.mark.parametrize("fault", ["unauthorized", "foreign", "generation", "hold", "soft_deleted"])
-def test_cloud_cleanup_refuses_unknown_scope_new_versions_holds_and_retained_copies(tmp_path, fault):
+@pytest.mark.parametrize("fault", ["unauthorized", "foreign", "generation", "hold", "soft_deleted_unbounded",
+                                   "soft_deleted_foreign"])
+def test_cloud_cleanup_refuses_unknown_scope_new_versions_holds_and_unbounded_retained_copies(tmp_path, fault):
     root, command = fixture(tmp_path)
     acknowledge_withdrawal(capture_root=root, command=command)
     storage = FakeStorage()
@@ -83,13 +84,97 @@ def test_cloud_cleanup_refuses_unknown_scope_new_versions_holds_and_retained_cop
         storage.rows[0]["generation"] = "999"
     elif fault == "hold":
         (root.parent.parent / "website_withdrawal/legal_hold.json").write_text('{"legal_hold":true}')
-    elif fault == "soft_deleted":
-        storage.soft = [{"name": storage.rows[0]["name"], "generation": "100"}]
+    elif fault == "soft_deleted_unbounded":
+        # A soft-deleted copy with no purge time is retention nobody can bound: it never finishes a deletion.
+        storage.soft = [{"name": storage.rows[0]["name"], "generation": "100", "hard_delete_time": None}]
+    elif fault == "soft_deleted_foreign":
+        storage.soft = [{"name": "scenes/site-other/captures/walkthrough-other/raw/video.mp4", "generation": "100",
+                         "hard_delete_time": "2026-12-01T04:02:14+00:00"}]
     with pytest.raises(ValueError):
         apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=plan["digest"], authorize_cloud_deletion=fault != "unauthorized")
     assert inspect_withdrawal(capture_root=root)["cloud_object_absence_verified"] is False
-    if fault != "soft_deleted":
+    if not fault.startswith("soft_deleted"):
         assert storage.deleted == []
+
+
+def test_cloud_cleanup_names_soft_deleted_versions_until_their_purge_and_claims_no_absence(tmp_path):
+    """The capture bucket's soft-delete policy keeps each deleted version restorable for 7 days and nothing can
+    remove it sooner. The apply deletes every live version and then lists those copies with their purge times;
+    it neither refuses (as it did before 2026-11-27, after the site's local copies were already gone) nor
+    records an absence it did not observe."""
+    root, command = fixture(tmp_path)
+    acknowledge_withdrawal(capture_root=root, command=command)
+    storage = FakeStorage()
+    storage.soft = [{"name": "scenes/site-req1/captures/walkthrough-req1/raw/walkthrough.mp4", "generation": "100",
+                     "hard_delete_time": "2026-12-01T04:02:14+00:00"}]
+    plan = plan_cloud_cleanup(capture_root=root, storage=storage)
+    receipt = apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=plan["digest"],
+                                  authorize_cloud_deletion=True)
+    assert storage.deleted == [("scenes/site-req1/captures/walkthrough-req1/raw/video.mp4", "123")]
+    assert receipt["cloud_object_absence_verified"] is False
+    assert list((root.parent.parent / "website_withdrawal").glob("cloud_verifications/*.json")) == []
+    assert module.cloud_soft_deleted_retention(capture_root=root, storage=storage) == storage.soft
+    # Once the provider has purged them, the same apply verifies the absence as before.
+    storage.soft = []
+    receipt = apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=plan["digest"],
+                                  authorize_cloud_deletion=True)
+    assert receipt["cloud_object_absence_verified"] is True
+
+
+def test_google_cleanup_storage_uses_its_own_key_and_reports_missing_rights(monkeypatch):
+    from google.cloud import storage as gcs
+
+    calls = {}
+
+    class Bucket:
+        def test_iam_permissions(self, permissions, timeout=None):
+            calls["asked"] = sorted(permissions)
+            return ["storage.objects.get", "storage.objects.list"]
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            calls["application_default"] = True
+
+        @classmethod
+        def from_service_account_json(cls, path):
+            calls["key"] = path
+            return cls.__new__(cls)
+
+        def bucket(self, name):
+            calls["bucket"] = name
+            return Bucket()
+
+    monkeypatch.setattr(gcs, "Client", Client)
+    storage = module.GoogleWebsiteCleanupStorage("capture-bucket", credentials_file="/etc/blueprint/credentials/k.json")
+    assert calls == {"key": "/etc/blueprint/credentials/k.json"}
+    assert storage.missing_permissions() == ["storage.objects.delete"]
+    assert calls["bucket"] == "capture-bucket"
+    assert calls["asked"] == ["storage.objects.delete", "storage.objects.get", "storage.objects.list"]
+    module.GoogleWebsiteCleanupStorage("capture-bucket")
+    assert calls["application_default"] is True
+
+
+def test_google_cleanup_storage_lists_each_soft_deleted_version_with_its_purge_time(monkeypatch):
+    from datetime import datetime, timezone
+
+    from google.cloud import storage as gcs
+
+    class Blob:
+        name = "scenes/site-req1/captures/walkthrough-req1/raw/walkthrough.mp4"
+        generation = 1795447287834713
+        hard_delete_time = datetime(2026, 12, 1, 4, 2, 14, tzinfo=timezone.utc)
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_blobs(self, bucket, prefix, soft_deleted, timeout):
+            assert (bucket, prefix, soft_deleted) == ("capture-bucket", "scenes/site-req1/", True)
+            return [Blob()]
+
+    monkeypatch.setattr(gcs, "Client", Client)
+    assert module.GoogleWebsiteCleanupStorage("capture-bucket").soft_deleted_objects("scenes/site-req1/") == [
+        {"name": Blob.name, "generation": "1795447287834713", "hard_delete_time": "2026-12-01T04:02:14+00:00"}]
 
 
 def test_acknowledgement_is_durable_denial_not_deletion(tmp_path):

@@ -1264,3 +1264,23 @@ def test_without_a_source_bucket_one_receipt_names_it_and_the_pass_waits_until_o
     harness.run(offset=74 * HOUR, source_bucket_configured=lambda: True)
     assert harness.state()["status"] == "applied" and len(receipts()) == 2
     assert harness.world["gcs"].objects(f"scenes/{harness.site().name}/") == []
+
+
+def test_the_production_resolution_gives_the_bucket_client_the_units_own_key(monkeypatch, tmp_path):
+    """2026-11-27: the unit's shared key (the handoff listener's) may only list and read the capture bucket. The
+    delete right sits on a key of the withdrawal unit's own, so no other unit holds it."""
+    from blueprint_pipeline import website_capture_withdrawal_provider_copies as provider_copies
+
+    monkeypatch.setenv(automatic.REPORT_ROOT_ENV, str(tmp_path / "report"))
+    monkeypatch.setenv(automatic.SOURCE_BUCKET_ENV, "capture-bucket")
+    monkeypatch.setenv(automatic.SOURCE_CREDENTIALS_ENV, "/etc/blueprint/credentials/website-withdrawal-deletion.json")
+    monkeypatch.setattr(deletion.B2ObjectVersions, "configured", classmethod(lambda cls: None))
+    monkeypatch.setattr(provider_copies, "production_deleters", dict)
+    made = []
+    monkeypatch.setattr(withdrawal, "GoogleWebsiteCleanupStorage",
+                        lambda bucket, credentials_file=None: made.append((bucket, credentials_file)) or "client")
+    assert automatic._production_resolution()["cloud_storage"] == "client"
+    assert made == [("capture-bucket", "/etc/blueprint/credentials/website-withdrawal-deletion.json")]
+    monkeypatch.delenv(automatic.SOURCE_CREDENTIALS_ENV)
+    automatic._production_resolution()
+    assert made[-1] == ("capture-bucket", None)

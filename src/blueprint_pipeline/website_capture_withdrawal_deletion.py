@@ -994,8 +994,11 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     return remaining
 
 
-def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied: bool) -> list[dict[str, Any]]:
-    """Each retention-policy data class: what this deletion removes (or plans to) and what remains, and why."""
+def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied: bool,
+                        cloud_retained: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """Each retention-policy data class: what this deletion removes (or plans to) and what remains, and why.
+
+    ``cloud_retained``: the source bucket's soft-deleted versions, still restorable until their purge times."""
 
     rows = []
     for name, row in POLICY_COPY_CLASSES.items():
@@ -1005,6 +1008,12 @@ def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied
             covered = covered[:1]
             remaining.append({"what": f"scenes/{plan['scene_id']}/ in the capture source bucket",
                               "reason": "no source bucket was named for this deletion; use --bucket"})
+        if name == "raw_capture_truth" and cloud_retained:
+            remaining.append({"what": f"soft-deleted versions of scenes/{plan['scene_id']}/ in the capture source "
+                                      "bucket",
+                              "reason": "restorable at the provider until "
+                                        f"{max(str(copy['hard_delete_time']) for copy in cloud_retained)}; nothing "
+                                        "can remove them sooner"})
         rows.append({"class": name, "status": "removed_in_part" if covered else "remaining",
                      "removed" if applied else "planned_removal": covered, "remaining": remaining})
     return rows
@@ -1118,6 +1127,13 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     _require(plan["digest"] == expected_plan_digest, "plan_changed")
     _require(not plan["unresolved"], "unresolved_copies")
     _require(plan["legal_hold"] is False, "legal_hold")
+    cloud_storage = resolution.get("cloud_storage")
+    if cloud_storage is not None:
+        # The bucket step comes last. An identity that may not delete there would leave the site half deleted
+        # and the pass failing every hour, so it is checked before the first delete (2026-11-27: the unit's
+        # shared key could only list and read the capture bucket).
+        missing = cloud_storage.missing_permissions()
+        _require(not missing, "capture_source_bucket_permission_missing:" + ",".join(missing))
     store, deleted = resolution.get("object_store"), {"objects": [], "runs": [], "files": []}
     # Screening first: if its attempts changed since the plan, nothing at all is deleted.
     screened = {uri for attempt in plan["screening"]["attempts"] for uri in attempt["object_uris"]}
@@ -1185,11 +1201,22 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         == plan["scene_files"]["digest"], "scene_files_changed")
     local = withdrawal.apply_local_cleanup(capture_root=Path(capture_root), expected_plan_digest=local_plan["digest"],
                                            authorize_local_deletion=True)
-    cloud_storage = resolution.get("cloud_storage")
+    cloud_retained: list[dict[str, Any]] = []
     if cloud_storage is not None:
         withdrawal.apply_cloud_cleanup(capture_root=Path(capture_root), storage=cloud_storage,
                                        expected_plan_digest=plan["cloud_plan_digest"], authorize_cloud_deletion=True)
+        # Deleted, yet the bucket's soft-delete policy keeps each version restorable until its purge time.
+        cloud_retained = [{"provider": "google_cloud_storage", "kind": "soft_deleted_object",
+                           "bucket": cloud_storage.bucket_name, **copy,
+                           "reason": "the capture bucket's soft-delete policy keeps this deleted version restorable "
+                                     "until hard_delete_time; nothing can remove it sooner, and Google Cloud "
+                                     "Storage purges it then"}
+                          for copy in withdrawal.cloud_soft_deleted_retention(capture_root=Path(capture_root),
+                                                                              storage=cloud_storage)]
     remaining = _remaining(plan, cloud_storage is not None)
+    if cloud_retained:
+        remaining.append({"holder": "capture_source_bucket_soft_deleted", "copies": cloud_retained,
+                          "reason": "deleted, but restorable at the provider until each copy's hard_delete_time"})
     if plan.get("provider_copies") is not None:
         remaining.extend(provider_copy.blocking(plan["provider_copies"], provider_results))
     incomplete = completion_blockers(plan, cloud_deleted=cloud_storage is not None, provider_results=provider_results)
@@ -1211,7 +1238,7 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                                     "still refers to these blobs; once this site's entries are gone they are not "
                                     "this site's"})
     retention = (provider_copy.retention_remains(plan["provider_copies"])
-                 if plan.get("provider_copies") is not None else [])
+                 if plan.get("provider_copies") is not None else []) + cloud_retained
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA, "plan_digest": plan["digest"],
         **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest")},
@@ -1222,7 +1249,8 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                                                                 screening_objects),
                     "native_g1": g1_deleted, "team_scene": team_deleted},
         "remaining": remaining,
-        "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_storage is not None, applied=True),
+        "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_storage is not None, applied=True,
+                                                   cloud_retained=cloud_retained),
         # A deferred screening attempt is covered but not yet deleted.
         "covered_copies_deleted": not plan["screening"]["deferred"],
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None

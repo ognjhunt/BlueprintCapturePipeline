@@ -110,6 +110,9 @@ DEFAULT_SCREENING_STATUS = Path("/var/lib/blueprint/pipeline-control-plane/beta-
 SITE_ROOTS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS"
 REPORT_ROOT_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_DELETION_REPORT_ROOT"
 SOURCE_BUCKET_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET"
+# A service-account key of the unit's own for that bucket (list, read and delete there only), so no other unit
+# holds the delete right; without it the client uses the environment's default credentials.
+SOURCE_CREDENTIALS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_CREDENTIALS_FILE"
 
 # An apply that ends incomplete only for want of a source bucket waits for one (``_due``).
 SOURCE_BUCKET_WAIT = "capture_source_bucket"
@@ -901,6 +904,7 @@ def _production_resolution() -> dict[str, Any]:
     from .website_capture_withdrawal_deletion import B2ObjectVersions
 
     bucket = str(os.getenv(SOURCE_BUCKET_ENV) or "").strip()
+    credentials = str(os.getenv(SOURCE_CREDENTIALS_ENV) or "").strip() or None
     from .website_capture_withdrawal_provider_copies import production_deleters
     from .website_capture_withdrawal_unclaimed import DEFAULT_ROOT as UNCLAIMED_ROOT
     from .website_withdrawal_run_scan_cache import DIRNAME as RUN_SCAN_DIRNAME
@@ -910,7 +914,8 @@ def _production_resolution() -> dict[str, Any]:
             "site_index_root": report_root / SITE_INDEX_DIRNAME, "run_scan_cache": report_root / RUN_SCAN_DIRNAME,
             "provider_copies": True,
             "provider_deleters": production_deleters(),
-            "cloud_storage": withdrawal.GoogleWebsiteCleanupStorage(bucket) if bucket else None}
+            "cloud_storage": withdrawal.GoogleWebsiteCleanupStorage(bucket, credentials_file=credentials)
+            if bucket else None}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
