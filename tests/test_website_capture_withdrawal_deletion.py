@@ -84,17 +84,26 @@ class FakeB2:
 class FakeGcs:
     bucket_name = "synthetic-source"
 
-    def __init__(self):
+    def __init__(self, *, soft_delete_until: str | None = None, missing: tuple[str, ...] = ()):
         self.rows = [{"name": "scenes/site-req1/captures/walkthrough-req1/raw/video.mp4", "generation": "7",
                       "size": 15, "crc32c": "AAAAAA=="}]
+        # A bucket with a soft-delete policy keeps each deleted object restorable until its purge time.
+        self.soft_delete_until, self.soft, self.missing = soft_delete_until, [], tuple(missing)
 
     def objects(self, prefix):
         return [dict(row) for row in self.rows if row["name"].startswith(prefix)]
 
     def soft_deleted_objects(self, prefix):
-        return []
+        return [dict(row) for row in self.soft if row["name"].startswith(prefix)]
+
+    def missing_permissions(self):
+        return list(self.missing)
 
     def delete(self, name, generation):
+        if self.soft_delete_until is not None:
+            self.soft.extend({"name": row["name"], "generation": row["generation"],
+                              "hard_delete_time": self.soft_delete_until}
+                             for row in self.rows if (row["name"], row["generation"]) == (name, generation))
         self.rows = [row for row in self.rows if (row["name"], row["generation"]) != (name, generation)]
 
 
@@ -285,6 +294,41 @@ def test_apply_deletes_exactly_the_plan_and_names_what_remains(world):
     sealed = world["site"] / "website_withdrawal/deletion_receipts" / f"{plan['digest'][7:]}.json"
     assert json.loads(sealed.read_text()) == receipt
     assert receipt["digest"] == canonical_digest(receipt, digest_field="digest")
+
+
+def test_a_bucket_identity_that_may_not_delete_stops_the_apply_before_anything_is_deleted(world):
+    """The bucket step comes last. An identity without the delete right would leave the site half deleted and
+    the pass failing every hour, so the apply refuses before its first delete (2026-11-27: the unit's shared
+    key could only list and read the capture bucket)."""
+    gcs = FakeGcs(missing=("storage.objects.delete",))
+    plan = _plan(world, cloud_storage=gcs)
+    with pytest.raises(deletion.WithdrawalDeletionError, match="capture_source_bucket_permission_missing"):
+        _apply(world, plan, cloud_storage=gcs)
+    for path in (world["construction"], world["canary"], world["prepared"]):
+        assert path.exists(), path
+    assert [path for path in world["site"].rglob("*") if path.is_file() and "website_withdrawal" not in path.parts]
+    assert world["store"].deleted == [] and len(gcs.rows) == 1
+
+
+def test_soft_deleted_copies_the_bucket_keeps_are_named_with_their_purge_time_and_do_not_fail_the_apply(world):
+    """A bucket with a soft-delete policy keeps every deleted object restorable for days and nothing removes it
+    sooner. The receipt names each such copy with the time the provider purges it; the apply does not fail on
+    them (before 2026-11-27 it raised after the local deletes and failed every pass for the policy's 7 days)."""
+    gcs = FakeGcs(soft_delete_until="2026-12-04T19:00:00+00:00")
+    plan = _plan(world, cloud_storage=gcs)
+    receipt = _apply(world, plan, cloud_storage=gcs)
+    assert gcs.rows == []
+    name = "scenes/site-req1/captures/walkthrough-req1/raw/video.mp4"
+    retained = [row for row in receipt["provider_retention_remains"] if row.get("kind") == "soft_deleted_object"]
+    assert [{key: row[key] for key in ("provider", "bucket", "name", "generation", "hard_delete_time")}
+            for row in retained] == [{"provider": "google_cloud_storage", "bucket": "synthetic-source", "name": name,
+                                      "generation": "7", "hard_delete_time": "2026-12-04T19:00:00+00:00"}]
+    assert "restorable" in retained[0]["reason"]
+    remaining = [row for row in receipt["remaining"] if row["holder"] == "capture_source_bucket_soft_deleted"]
+    assert remaining and remaining[0]["copies"] == retained
+    assert receipt["deleted"]["capture_source_bucket_prefix"] == "scenes/site-req1/"
+    raw = next(row for row in receipt["policy_copy_classes"] if row["class"] == "raw_capture_truth")
+    assert any("2026-12-04T19:00:00+00:00" in row["reason"] for row in raw["remaining"])
 
 
 def test_archived_atlas_previews_of_the_walkthrough_are_found_by_name_even_after_retirement(world):

@@ -237,20 +237,38 @@ def _inspection(site: Path, journal: Path, current_cloud_storage: Any | None = N
     return value
 
 
+#: What the bucket step needs on the capture bucket; checked before a deletion deletes anything.
+CLOUD_CLEANUP_PERMISSIONS = ("storage.objects.delete", "storage.objects.get", "storage.objects.list")
+
+
 class GoogleWebsiteCleanupStorage:
-    """Operator-configured existing bucket. Generation preconditions are mandatory."""
-    def __init__(self, bucket_name: str):
+    """Operator-configured existing bucket. Generation preconditions are mandatory.
+
+    ``credentials_file`` is a service-account key of the caller's own. The withdrawal unit names one so that
+    the delete right on the capture bucket sits with no other unit; without it the client uses the
+    environment's default credentials.
+    """
+    def __init__(self, bucket_name: str, credentials_file: str | None = None):
         from google.cloud import storage
         self.bucket_name = bucket_name
-        self.client = storage.Client()
+        self.client = (storage.Client.from_service_account_json(credentials_file) if credentials_file
+                       else storage.Client())
+
+    def missing_permissions(self) -> list[str]:
+        """The bucket step's permissions this identity lacks on the bucket; empty when it holds them all."""
+        held = set(self.client.bucket(self.bucket_name).test_iam_permissions(list(CLOUD_CLEANUP_PERMISSIONS),
+                                                                              timeout=30))
+        return [name for name in CLOUD_CLEANUP_PERMISSIONS if name not in held]
 
     def objects(self, prefix: str) -> list[dict[str, Any]]:
         return [{"name": blob.name, "generation": str(blob.generation), "size": blob.size, "crc32c": blob.crc32c}
                 for blob in self.client.list_blobs(self.bucket_name, prefix=prefix, versions=True, timeout=30)]
 
     def soft_deleted_objects(self, prefix: str) -> list[dict[str, Any]]:
-        # Unknown/unsupported acknowledgement raises; it never verifies cleanup.
-        return [{"name": blob.name, "generation": str(blob.generation)}
+        # Unknown/unsupported acknowledgement raises; it never verifies cleanup. Each row carries the time the
+        # bucket's soft-delete policy purges it (None when the provider names none).
+        return [{"name": blob.name, "generation": str(blob.generation),
+                 "hard_delete_time": blob.hard_delete_time.isoformat() if blob.hard_delete_time else None}
                 for blob in self.client.list_blobs(self.bucket_name, prefix=prefix, soft_deleted=True, timeout=30)]
 
     def delete(self, name: str, generation: str) -> None:
@@ -267,6 +285,31 @@ def _cloud_objects(site: Path, storage: Any) -> list[dict[str, Any]]:
                 or not isinstance(row.get("size"), int) or row["size"] < 0 or not row.get("crc32c")):
             raise ValueError("website_cleanup_cloud_scope_or_identity_invalid")
     return sorted(rows, key=lambda row: (row["name"], row["generation"]))
+
+
+def cloud_soft_deleted_retention(*, capture_root: Path, storage: Any) -> list[dict[str, Any]]:
+    """The site's soft-deleted object versions the bucket keeps restorable, each with its purge time.
+
+    A bucket with a soft-delete policy (Google Cloud Storage's default: 7 days) keeps every deleted version
+    restorable until its ``hard_delete_time``, and nothing can remove it sooner; the provider purges it then.
+    A version outside the site's prefix, or one with no purge time, is retention nobody can bound: it raises.
+    """
+    site = _site(capture_root)
+    prefix = f"scenes/{site.name}/"
+    rows = storage.soft_deleted_objects(prefix)
+    for row in rows:
+        if (not isinstance(row.get("name"), str) or not row["name"].startswith(prefix)
+                or any(part in {"", ".", ".."} for part in row["name"].split("/"))
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", str(row.get("generation", "")))):
+            raise ValueError("website_cleanup_cloud_scope_or_identity_invalid")
+        try:
+            purge = datetime.fromisoformat(str(row.get("hard_delete_time") or ""))
+        except ValueError:
+            purge = None
+        if purge is None or purge.tzinfo is None:
+            raise ValueError("website_cleanup_cloud_soft_delete_unbounded")
+    return sorted(({key: row[key] for key in ("name", "generation", "hard_delete_time")} for row in rows),
+                  key=lambda row: (row["name"], row["generation"]))
 
 
 def plan_cloud_cleanup(*, capture_root: Path, storage: Any) -> dict[str, Any]:
@@ -307,8 +350,14 @@ def apply_cloud_cleanup(*, capture_root: Path, storage: Any, expected_plan_diges
             # The provider may delete and then lose its response. Replay lists
             # exact remaining generations before attempting another deletion.
             storage.delete(row["name"], row["generation"])
-        if _cloud_objects(site, storage) or storage.soft_deleted_objects(plan["prefix"]):
+        if _cloud_objects(site, storage):
             raise ValueError("website_cleanup_cloud_retained_versions_pending")
+        # The soft-delete policy keeps each deleted version restorable until its purge time, and nothing removes
+        # it sooner: the caller names those copies (cloud_soft_deleted_retention). An absence is recorded only
+        # once none is left. Before 2026-11-27 this raised, after the site's local copies were already gone,
+        # and every pass failed for the policy's 7 days.
+        if cloud_soft_deleted_retention(capture_root=capture_root, storage=storage):
+            return _inspection(site, journal, current_cloud_storage=storage)
         verification = {"schema_version": "website_capture_cloud_object_absence.v1", "plan_digest": expected_plan_digest,
                         "tombstone_digest": receipt["tombstone_digest"], "bucket": storage.bucket_name,
                         "all_object_versions_absence_observed": True, "soft_deleted_versions_absence_observed": True,

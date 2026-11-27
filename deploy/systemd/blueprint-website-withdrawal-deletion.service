@@ -73,8 +73,15 @@ Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
-# The webhook (BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL, the capacity controller's route), the store
-# roots the workers use, and the optional BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET.
+# The capture source bucket whose scenes/site-<id>/ prefix a withdrawal deletes, and a key of the unit's own
+# for it: website-withdrawal-deletion@blueprint-8c1ca, which may only list, read and delete objects in that one
+# bucket. The environment file's GOOGLE_APPLICATION_CREDENTIALS (the handoff listener's) stays read-only there,
+# so no other unit holds the delete right. The key is root:blueprint 0640; a missing key fails the pass before
+# anything is planned.
+Environment=BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET=blueprint-8c1ca.appspot.com
+Environment=BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_CREDENTIALS_FILE=/etc/blueprint/credentials/website-withdrawal-deletion.json
+# The webhook (BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL, the capacity controller's route) and the store
+# roots the workers use.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.website_capture_withdrawal_automatic'

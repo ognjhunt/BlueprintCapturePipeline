@@ -1071,11 +1071,15 @@ What the owner does around the first apply:
    corrected as root. Give each the owner and group of its run root.
    `control_plane_evidence_offload._adopt_root_owner` does that for each new
    pointer.
-2. Set `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in
-   `/etc/blueprint/pipeline-control-plane.env` before the first apply, with
-   Google Cloud Storage credentials the unit can use. Set afterwards, the
-   new plan also sees every run offloaded since the first apply, and is very
-   likely `unresolved`. The raw video in the bucket then stays.
+2. The capture source bucket must be named before the first apply. Named
+   afterwards, the new plan also sees every run offloaded since the first
+   apply, and is very likely `unresolved`. Since 2026-11-27 the unit file names
+   it (`BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET=blueprint-8c1ca.appspot.com`)
+   with a key of the unit's own
+   (`BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_CREDENTIALS_FILE`, below). The owner
+   made that key on 2026-11-27. The environment file's
+   `GOOGLE_APPLICATION_CREDENTIALS` is the handoff listener's key, which may
+   only list and read that bucket.
 3. The first apply runs by itself on the first pass after the cool-off ends.
    Read `<site>/website_withdrawal/automatic_deletion_plan.json` after the
    first plan on the new release, before the cool-off ends. To stop the apply,
@@ -1125,18 +1129,37 @@ Known gaps:
 - The nine roots with no per-site binding are read through an ownership index
   (below). Entries whose owner cannot be determined are never deleted.
 - Some provider copies have no delete endpoint (below).
-- Without `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in the environment file,
-  the pass does not delete the capture source bucket prefix `scenes/site-<id>/`.
+- Without `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` (the unit file names it
+  since 2026-11-27), the pass does not delete the capture source bucket prefix
+  `scenes/site-<id>/`.
   The receipt names it under `remaining` and `incomplete_reasons`, and the site
   stays `incomplete` with `owner_action` in its state and in `summary.json`.
   It is not applied again until the variable is set (before 2026-11-27 it was
   applied again every 6 hours, and from the third time failed on the
   write-once receipt every hour). It pages as
-  `website_withdrawal_deletion_unresolved` after 72 hours. With the variable
-  set, the unit needs Google Cloud Storage credentials of its own
-  (`storage.Client()` in `GoogleWebsiteCleanupStorage`); without them every
-  pass fails and backs off. Whether the host sets either is not known: the
-  door refuses the environment file.
+  `website_withdrawal_deletion_unresolved` after 72 hours.
+- The bucket step uses the key in
+  `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_CREDENTIALS_FILE`:
+  `/etc/blueprint/credentials/website-withdrawal-deletion.json`, owner and
+  group `root:blueprint`, mode `0640`. It belongs to
+  `website-withdrawal-deletion@blueprint-8c1ca.iam.gserviceaccount.com`. That
+  account's only grant is the custom role `websiteWithdrawalSourceDeleter`
+  (`storage.objects.list`, `get` and `delete`) on
+  `gs://blueprint-8c1ca.appspot.com`. No other unit holds the delete right.
+  Without the variable the client uses the environment's default credentials.
+  If the key file is missing, the pass fails before it plans. Before its first
+  delete, the apply checks that the key may list, read and delete in the
+  bucket. Without that right it deletes nothing and fails as
+  `capture_source_bucket_permission_missing:<names>`.
+- The bucket keeps deleted objects for 7 days (soft delete), and nothing can
+  remove them sooner. The apply deletes every live version, then lists each
+  soft-deleted version with its `hard_delete_time`: in
+  `provider_retention_remains` (kind `soft_deleted_object`) and under
+  `remaining` as `capture_source_bucket_soft_deleted`. It records no cloud
+  absence while any is left. Before 2026-11-27 the apply raised
+  `website_cleanup_cloud_retained_versions_pending` after the local deletes,
+  and every pass failed for those 7 days. A soft-deleted version with no
+  purge time still fails the apply (`website_cleanup_cloud_soft_delete_unbounded`).
 
 ### Complete or incomplete
 
