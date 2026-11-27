@@ -62,7 +62,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .control_plane_storage_roots import STORAGE_ROOTS, classify_path
+from .control_plane_storage_roots import STORAGE_ROOTS, classify_path, path_parts
 from .core.common import write_json
 from .decision_evidence_contracts import canonical_digest
 
@@ -271,7 +271,7 @@ def _site_data(host_path: str) -> bool:
         return False
     parts = PurePosixPath(host_path).parts
     for root in SITE_DATA_ROOTS:
-        root_parts = PurePosixPath(root).parts
+        root_parts = path_parts(root)
         if parts[:len(root_parts)] == root_parts:
             return True
     classified = classify_path(host_path)

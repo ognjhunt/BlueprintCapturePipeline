@@ -166,3 +166,41 @@ def test_lane_scratch_roots_are_classified_per_lane(path, expected_root):
     root = classify_path(path)
     assert root is not None
     assert (root.storage_class, root.path) == ("lane_scratch", expected_root)
+
+
+def test_classifying_per_directory_gives_exactly_what_comparing_every_root_gives():
+    """``classify_path`` keeps its answer per directory. It must name the same root as the plain rule: the most
+    specific root that is the path or an ancestor of it, the first listed winning a tie."""
+
+    from pathlib import PurePosixPath
+
+    from blueprint_pipeline import control_plane_storage_roots as roots
+
+    def plain(path: str):
+        candidate = PurePosixPath(str(path)).parts
+        best, best_rank = None, (-1, -1)
+        for root in roots.STORAGE_ROOTS:
+            root_parts = PurePosixPath(root.path).parts
+            if roots._contains(root_parts, candidate):
+                rank = roots._specificity(root_parts)
+                if rank > best_rank:
+                    best, best_rank = root, rank
+        return best
+
+    paths = {"/", "", "relative/file.json", "/var", "/var/lib/blueprint", "/nowhere/at/all/file.json",
+             "/var/lib/blueprint/pipeline-control-plane", "/var/lib/blueprint/pipeline-control-plane/unlisted/x.json"}
+    for root in roots.STORAGE_ROOTS:
+        for concrete in (root.path.replace("*", "bucket-a"), root.path.replace("*", "site-req1"), root.path):
+            parent = str(PurePosixPath(concrete).parent)
+            paths.update({concrete, parent, str(PurePosixPath(parent).parent),
+                          concrete + "/entry.json", concrete + "/nested/deeper/entry.json", concrete + ".sibling",
+                          parent + "/another-entry", parent + "/another-entry/file.json"})
+    assert len(paths) > 500
+    different = [path for path in sorted(paths) if roots.classify_path(path) is not plain(path)]
+    assert different == []
+    # Asked twice (the second answer comes from what was kept), and in the other order.
+    assert [roots.classify_path(path) for path in sorted(paths, reverse=True)] == [
+        plain(path) for path in sorted(paths, reverse=True)]
+    # A root that names one file is found although its directory belongs to a shorter root or to none.
+    named = [root for root in roots.STORAGE_ROOTS if root.path.endswith(".json")]
+    assert named and all(roots.classify_path(root.path) is root for root in named)
