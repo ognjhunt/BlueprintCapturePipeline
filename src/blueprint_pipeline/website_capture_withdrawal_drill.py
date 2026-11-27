@@ -109,6 +109,9 @@ class MemoryGcs:
     def soft_deleted_objects(self, prefix: str) -> list[dict[str, Any]]:
         return []
 
+    def missing_permissions(self) -> list[str]:
+        return []
+
     def delete(self, name: str, generation: str) -> None:
         self.rows = [row for row in self.rows if (row["name"], row["generation"]) != (name, generation)]
 

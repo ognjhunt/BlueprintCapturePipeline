@@ -994,3 +994,13 @@ def test_launch_activation_unit_outlasts_its_preparation_command(tmp_path, monke
     timeouts = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("TimeoutStartSec=")]
     assert seen["timeout"] == 4 * 3600
     assert timeouts == ["255min"] and seen["timeout"] < 255 * 60
+
+
+def test_the_withdrawal_unit_names_the_capture_bucket_and_a_key_of_its_own():
+    """2026-11-27: without the bucket the first apply leaves the raw capture prefix behind, and the shared key
+    in the environment file (the handoff listener's) may only list and read it. The unit names both here."""
+    unit = _read(WITHDRAWAL_DELETION_UNIT)
+    assert "\nEnvironment=BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET=blueprint-8c1ca.appspot.com\n" in unit
+    assert ("\nEnvironment=BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_CREDENTIALS_FILE="
+            "/etc/blueprint/credentials/website-withdrawal-deletion.json\n") in unit
+    assert "pipeline-handoff-listener" not in unit
