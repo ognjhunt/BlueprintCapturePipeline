@@ -1043,9 +1043,25 @@ What the rule does not do:
   is, makes that site's plan `unresolved` again if its pointer names no site.
   Only reading that run's archive by hand settles it.
 - It does not read the capture's birth records.
-- The plan reads the workspace archive only from a receipt under its own name
-  (`<site>.retired.v1.json`). The archive a receipt moved aside names is not
-  in the plan; whether another part of the plan finds it was not checked.
+
+Two older gaps, closed by stop-gaps on 2026-11-27:
+
+- A retirement receipt moved aside (after a restore, or when a workspace was
+  born again) names an archive of the site's workspace. The plan does not
+  delete that archive. Since 2026-11-27 each such file, and each receipt
+  temporary, is an `unresolved` row
+  (`website_withdrawal_deletion_moved_aside_retirement_receipt`). The row
+  names the file and, when it can be read, the archive (`archive_uri`). So
+  nothing is applied, and after 72 hours the unresolved page names the reason.
+  Deleting that archive is still owed. It needs its own review. Until then the
+  owner settles such a site by hand.
+- Scene workspace retention could retire a withdrawn site's workspace once
+  nothing in it changed for 48 hours. It archived the tombstone with it, and
+  the pass then found no withdrawal at all. Since 2026-11-27 retention never
+  retires a workspace with anything at `website_withdrawal/tombstone.json`.
+  The plan says `withdrawal_tombstone_present`. This covers the hourly
+  storage clean-up and the door's `retire-scene-workspace`; both use the same
+  plan and apply. A workspace without a tombstone is retired as before.
 
 What the owner does around the first apply:
 
