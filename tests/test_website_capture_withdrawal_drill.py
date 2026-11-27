@@ -58,13 +58,21 @@ def test_withdrawal_drill_runs_offline_from_the_webapp_vector_to_a_sealed_receip
     assert "reproducible SAM preparation artifacts" in uncovered["reason"]
     # The counts the record prints: every covered copy went from some to none.
     counts = {row["copy_class"]: (row["before"], row["after"]) for row in result["record"] if row["before"] is not None}
-    assert counts == {"scene_files": (5, 0), "run_directories": (3, 0), "run_pointers": (1, 0),
+    # Six scene files: the capture's five and the handoff listener's job ledger.
+    assert counts == {"scene_files": (6, 0), "run_directories": (3, 0), "run_pointers": (1, 0),
                       "b2_object_versions": (5, 0), "capture_source_bucket_objects": (1, 0)}
     assert receipt["covered_copies_deleted"] is True and receipt["provider_copies_deleted"] is False
     # (c) the other site's capture, run, B2 object and bucket object are untouched (checked inside the drill too).
     assert (tmp_path / "capture-partition/scenes/site-drill-other/captures/walkthrough-drill-other/raw/video.mp4"
             ).read_bytes() == b"synthetic-video drill-other"
     assert (tmp_path / "control-plane/task-evaluation-launch-runs/launch-drill-other-construction-0003").is_dir()
+    # (d) the unrelated run offloaded before the site came is kept, and the receipt says why with both times.
+    assert (tmp_path / "control-plane/task-evaluation-launch-runs/launch-unrelated-legacy-run-0099.offloaded.v1.json"
+            ).is_file()
+    (older,) = receipt["offloaded_runs_older_than_site"]["runs"]
+    assert older["reason"] == "website_withdrawal_deletion_offloaded_run_predates_site"
+    assert older["offloaded_at_epoch"] + deletion.PREDATES_SITE_MARGIN_SECONDS < older["site_earliest_record_epoch"]
+    assert "offloaded_runs_older_than_site" in holders
     with capsys.disabled():
         sys.stdout.write("\n" + drill.format_record(result["record"]) + "\n")
 

@@ -874,6 +874,22 @@ class _Evaluation:
     allocated_bytes: int
 
 
+#: A workspace that holds a withdrawal tombstone is never retired: the withdrawal pass finds a withdrawal only
+#: by ``<site>/website_withdrawal/tombstone.json`` (``website_capture_withdrawal_automatic.discover_withdrawals``),
+#: and retiring the workspace would archive the withdrawn site's data with its tombstone and hide it from the pass.
+WITHDRAWAL_TOMBSTONE_REASON = "withdrawal_tombstone_present"
+
+
+def _withdrawal_tombstone_present(scene: Path) -> bool:
+    """True when anything stands at the tombstone's path (valid or not, file or link), or it cannot be checked."""
+
+    journal = scene / "website_withdrawal"
+    try:
+        return journal.is_symlink() or os.path.lexists(journal / "tombstone.json")
+    except OSError:
+        return True
+
+
 def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: Path, now: float,
               index: ReferenceIndex | None, process_checker: Callable[[Path], bool]) -> _Evaluation:
     """Checks 1-8. They read local state only and never touch the workspace."""
@@ -883,6 +899,8 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
     # A pin or queue message already forbids deletion. Avoid walking and statting
     # a multi-gigabyte tree on every GC tick while either cheap hold remains.
     early: list[str] = []
+    if _withdrawal_tombstone_present(scene):
+        early.append(WITHDRAWAL_TOMBSTONE_REASON)
     if _pinned_workspace(scene, live_pinned_paths(context.pins_root, now=lambda: now)):
         early.append("pinned")
     try:

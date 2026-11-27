@@ -10,7 +10,11 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
 ``plan`` (the default; deletes nothing) resolves, for one acknowledged withdrawal:
 
 - the scene directory (and ``.retiring-<scene>-*`` leftovers of a workspace
-  retirement) and the workspace retirement receipt with its B2 archive;
+  retirement) and the workspace retirement receipt with its B2 archive. A
+  receipt moved aside or a receipt temporary (``.<scene>.retired.v1.json.*``)
+  is not deleted and neither is the archive it names: each is an unresolved row
+  (``website_withdrawal_deletion_moved_aside_retirement_receipt``), so nothing
+  is applied until that archive has its own reviewed handling;
 - every run directory, offload pointer and residue pointer under the run roots
   (the ``evidence_cold`` roots and the intent-keyed scene preparation outputs by
   default) that names the site: its scene id or capture id, a scene intent whose
@@ -19,7 +23,14 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   source launch). A run is bound only by its own records.
   Offloaded runs are judged by their pointer and retained receipts (one naming
   only another site is that site's), or, with ``scan_offloaded_archives``, by
-  the records inside their archive, read through the existing client;
+  the records inside their archive, read through the existing client. One that
+  names no site and whose sealed evidence-offload pointer says it left the host
+  more than ``PREDATES_SITE_MARGIN_SECONDS`` before the site's earliest record
+  there (``_site_earliest_record``) cannot hold the site's data: it is kept,
+  listed with both times in ``offloaded_runs_older_than_site``, and is not
+  undetermined. The first plan that judges one writes the site's earliest
+  record once in the withdrawal journal (``site_earliest_record.json``), so a
+  plan deletes nothing but is not read-only;
 - every B2 object those pointers and the bound runs' registered remote result
   artifacts name, with each object version and delete marker listed through
   the existing artifact store client, every archived Atlas preview of the
@@ -378,6 +389,149 @@ def _pointer_uri(pointer: Mapping[str, Any]) -> str | None:
     return str(uri) if uri else None
 
 
+#: How long before the site's earliest record on the host an offloaded run must have left it to be cleared. A
+#: pointer's ``offloaded_at_epoch`` is the start of the clean-up tick that archived the run (the storage clean-up
+#: passes one clock per tick), so its archive can hold files written until the tick ended; the clean-up unit
+#: stops a tick at 3 hours (``TimeoutStartSec=3h``), and the margin must stay longer than that. Equal falls on the
+#: safe side.
+PREDATES_SITE_MARGIN_SECONDS = 6 * 3600
+PREDATES_SITE_REASON = "website_withdrawal_deletion_offloaded_run_predates_site"
+_JOB_LEDGER = ("pipeline_job_ledger.json", "pipeline_job_ledger.v1")
+
+
+def _zoned_epoch(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp() if parsed.tzinfo is not None else None
+
+
+def _site_earliest_record(site: Path, identity: Mapping[str, str]) -> dict[str, Any]:
+    """The earliest time the host recorded anything of the site, or why it cannot say (``epoch`` None).
+
+    The minimum of: every capture's job ledger ``started_at`` and the start of every attempt in its history
+    (the handoff listener writes it at its first lease claim for the capture and carries it unchanged into
+    every later revision, so a restore keeps it), and the modification time of the site directory and of
+    everything under it. More traces can only move it earlier. Nothing is known when a capture has no
+    readable ledger of the listener's schema with a zoned ``started_at``, or when the scene workspace was
+    retired (its ledger was removed with it, and one written by a later delivery would start late).
+    A retirement is seen by its receipt under its own name, by a receipt moved aside or a receipt temporary
+    (``.<scene>.retired.v1.json.*``: the retention code moves the receipt aside when a later delivery made
+    a new workspace, ``receipt_workspace_mismatch``, and a restore does the same), by a ``.retiring-``
+    leftover, or by an ``attempt_history`` row with source ``scene_retirement_receipt`` (the listener
+    writes it into a ledger it starts after a retirement that ended for lost authority).
+    """
+
+    def unavailable(reason: str) -> dict[str, Any]:
+        return {"epoch": None, "ledger_epoch": None, "earliest_mtime_epoch": None, "unavailable_reason": reason}
+
+    scenes, scene = site.parent, identity["scene_id"]
+    if (os.path.lexists(scenes / f"{scene}.retired.v1.json") or any(scenes.glob(f".retiring-{scene}-*"))
+            or any(scenes.glob(f".{scene}.retired.v1.json.*"))):
+        return unavailable("site_workspace_retired")
+    filename, schema = _JOB_LEDGER
+    ledger_times: list[float] = []
+    born_again = False
+    try:
+        captures = sorted((site / "captures").iterdir())
+        for capture in captures:
+            _require(not capture.is_symlink() and capture.is_dir(), "unsafe_entry")
+            ledger = _json(capture / filename)
+            started = _zoned_epoch(ledger.get("started_at"))
+            _require(ledger.get("schema_version") == schema and started is not None, "record_unreadable")
+            history = ledger.get("attempt_history") or []
+            _require(isinstance(history, list), "record_unreadable")
+            born_again = born_again or any(isinstance(row, dict) and row.get("source") == "scene_retirement_receipt"
+                                           for row in history)
+            ledger_times.append(started)
+            ledger_times.extend(at for row in history if isinstance(row, dict)
+                                for at in map(_zoned_epoch, (row.get("started_at"), row.get("reopened_at")))
+                                if at is not None)
+        _require(ledger_times, "record_unreadable")
+    except (WithdrawalDeletionError, OSError):
+        return unavailable("site_job_ledger_unreadable")
+    if born_again:
+        # The ledger was started after the workspace was retired: the site's first life began earlier.
+        return unavailable("site_workspace_retired")
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    try:
+        earliest = os.lstat(site).st_mtime
+        for root, directories, files in os.walk(site, onerror=unreadable):
+            for name in (*directories, *files):
+                earliest = min(earliest, os.lstat(Path(root) / name).st_mtime)
+    except OSError:
+        return unavailable("site_tree_unreadable")
+    return {"epoch": min(min(ledger_times), earliest), "ledger_epoch": min(ledger_times),
+            "earliest_mtime_epoch": earliest, "unavailable_reason": None}
+
+
+SITE_RECORD_SCHEMA = "website_withdrawal_site_earliest_record.v1"
+SITE_RECORD_FILENAME = "site_earliest_record.json"
+
+
+def _site_record(site: Path, identity: Mapping[str, str]) -> dict[str, Any]:
+    """``_site_earliest_record``, kept in the withdrawal journal so a plan after the apply still has it.
+
+    The apply removes the site's files, its job ledger with them, and the journal stays. The first plan
+    that can read the ledger seals what it found there (written once, bound to the tombstone); every later
+    plan takes the earlier of that and what it reads now. With neither, nothing is known.
+    """
+
+    fresh = _site_earliest_record(site, identity)
+    path = site / "website_withdrawal" / SITE_RECORD_FILENAME
+    kept = None
+    if os.path.lexists(path):
+        try:
+            value = _json(path)
+            _require(value.get("schema_version") == SITE_RECORD_SCHEMA
+                     and value.get("scene_id") == identity["scene_id"]
+                     and value.get("tombstone_digest") == identity["tombstone_digest"]
+                     and type(value.get("epoch")) in (int, float)
+                     and value.get("digest") == canonical_digest(value, digest_field="digest"), "record_unreadable")
+            kept = float(value["epoch"])
+        except (WithdrawalDeletionError, OSError):
+            kept = None  # never trusted; what is read now still counts
+    elif fresh["epoch"] is not None:
+        value = {"schema_version": SITE_RECORD_SCHEMA, "scene_id": identity["scene_id"],
+                 "tombstone_digest": identity["tombstone_digest"],
+                 **{key: fresh[key] for key in ("epoch", "ledger_epoch", "earliest_mtime_epoch")}}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        withdrawal._persist(path, value)
+        kept = float(fresh["epoch"])
+    known = [epoch for epoch in (fresh["epoch"], kept) if epoch is not None]
+    return {**fresh, "journal_epoch": kept, "epoch": min(known) if known else None,
+            "unavailable_reason": None if known else fresh["unavailable_reason"]}
+
+
+def _offloaded_before(unit: Mapping[str, Any], site_epoch: float | None) -> float | None:
+    """When a pointer-only run left the host, if that was more than the margin before ``site_epoch``; else None.
+
+    Only an evidence offload pointer counts: its writer archives the whole run directory, seals the pointer
+    and removes the directory. Its time is the start of the clean-up tick, so the archive can hold files written
+    up to the tick's 3-hour limit later (``PREDATES_SITE_MARGIN_SECONDS``).
+    Every pointer of the run must be one, sealed (``_sealed_pointer`` has checked), ``offloaded``, with a
+    finite positive time; the run has no directory and no leftover beside it.
+    """
+
+    if site_epoch is None or unit["directory"] is not None or unit["leftovers"] or not unit["pointers"]:
+        return None
+    times = []
+    for path, pointer in zip(unit["pointers"], unit["pointer_values"]):
+        at = pointer.get("offloaded_at_epoch")
+        if (not Path(path).name.endswith(".offloaded.v1.json") or pointer.get("status") != "offloaded"
+                or type(at) not in (int, float) or not 0 < at < float("inf")):
+            return None
+        times.append(float(at))
+    latest = max(times)
+    return latest if latest + PREDATES_SITE_MARGIN_SECONDS < site_epoch else None
+
+
 def _remote_artifact_uris(run: Path) -> list[str]:
     directory = run / "artifacts/result_delivery/remote_artifacts"
     return sorted(str(_json(path).get("uri")) for path in directory.glob("*.json")) if directory.is_dir() else []
@@ -504,7 +658,23 @@ def _scene_workspace(site: Path, identity: Mapping[str, str], unresolved: list[d
         else:
             value["receipt"] = str(receipt_path)
             value["archive_uri"] = _pointer_uri(receipt)
+    # A retirement receipt moved aside (a restore, or a workspace born again) or a receipt temporary still names
+    # an archive of the site's workspace, and the plan does not delete it (that would need its own review). Until
+    # it does, each such file stops the apply, named, with the archive it names when it can be read.
+    for path in sorted(scenes.glob(f".{identity['scene_id']}.retired.v1.json.*")):
+        row: dict[str, Any] = {"path": str(path), "reason": MOVED_ASIDE_RETIREMENT_RECEIPT_REASON}
+        try:
+            moved = _json(path) if path.is_file() and not path.is_symlink() else {}
+            if moved.get("scene_id") == identity["scene_id"] and _pointer_uri(moved):
+                row["archive_uri"] = _pointer_uri(moved)
+        except (WithdrawalDeletionError, OSError, AttributeError, TypeError):
+            pass  # unreadable: the row still stops the apply
+        unresolved.append(row)
     return value
+
+
+#: Why a plan with a moved-aside or temporary workspace retirement receipt of the site is unresolved.
+MOVED_ASIDE_RETIREMENT_RECEIPT_REASON = "website_withdrawal_deletion_moved_aside_retirement_receipt"
 
 
 def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
@@ -610,7 +780,11 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              provider_deleters: Mapping[str, Any] | None = None,
                              run_scan_cache: Path | None = None, scan_deadline: float | None = None
                              ) -> dict[str, Any]:
-    """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one).
+    """Resolve every Pipeline-controlled copy of the site; deletes nothing (the GCS plan is the existing one).
+
+    A plan is not read-only: the first plan that judges an offloaded run by the site's earliest record writes
+    ``site_earliest_record.json`` once in the site's withdrawal journal (``_site_record``), and with
+    ``run_scan_cache`` it writes that cache.
 
     ``run_scan_cache`` keeps what each run's records name between plans
     (``website_withdrawal_run_scan_cache``), so a plan reads only the runs that changed; the plan
@@ -660,13 +834,24 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                 bound_names.add(unit["name"])
                 changed = True
     runs, providers = [], set()
+    # Offloaded runs whose local record names no site, cleared because they left the host before the site came.
+    site_record: dict[str, Any] | None = None
+    predating: list[dict[str, Any]] = []
     for key in sorted(units):
         unit, scan = units[key], facts[key]
         if key not in bound:
             # An offloaded run whose local record names only another site is that site's run.
             if unit["judged_by"] == "offloaded_pointer" and not scan.other_sites:
-                unresolved.append({"path": str(Path(unit["root"]) / unit["name"]),
-                                   "reason": "website_withdrawal_deletion_offloaded_run_binding_undetermined"})
+                if site_record is None:
+                    site_record = _site_record(site, identity)
+                left = _offloaded_before(unit, site_record["epoch"])
+                if left is None:
+                    unresolved.append({"path": str(Path(unit["root"]) / unit["name"]),
+                                       "reason": "website_withdrawal_deletion_offloaded_run_binding_undetermined"})
+                else:
+                    # Not the site's: nothing is added to the deletion, the run only leaves the unresolved list.
+                    predating.append({"path": str(Path(unit["root"]) / unit["name"]), "reason": PREDATES_SITE_REASON,
+                                      "offloaded_at_epoch": left, "site_earliest_record_epoch": site_record["epoch"]})
             continue
         if scan.other_sites:
             unresolved.append({"path": str(Path(unit["root"]) / unit["name"]),
@@ -763,6 +948,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         "provider_copies": provider_copy.plan_providers(site) if provider_copies else None,
         "unresolved": sorted(unresolved, key=lambda row: json.dumps(row, sort_keys=True)),
         "scan_offloaded_archives": bool(scan_offloaded_archives),
+        "offloaded_runs_older_than_site": {"margin_seconds": PREDATES_SITE_MARGIN_SECONDS,
+                                           "site_earliest_record": site_record, "runs": predating},
     }
     plan["digest"] = canonical_digest(plan, digest_field="digest")
     return plan
@@ -787,6 +974,13 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     if plan.get("provider_copies") is not None:
         remaining.extend({"holder": "not_deleted_at_provider", **row}
                          for row in plan["provider_copies"]["not_deleted_at_provider"])
+    older = (plan.get("offloaded_runs_older_than_site") or {}).get("runs") or []
+    if older:
+        remaining.append({"holder": "offloaded_runs_older_than_site", "count": len(older),
+                          "reason": "kept: offloaded runs whose sealed pointers name no site and say they left the "
+                                    f"host more than {PREDATES_SITE_MARGIN_SECONDS // 3600} hours before the site's "
+                                    "earliest record there; they cannot hold its data and are not this site's to "
+                                    "delete (each is listed in offloaded_runs_older_than_site)"})
     remaining.append({"holder": "retained_audit_and_lineage_metadata",
                       "paths": [str(Path(plan["site_root"]) / "website_withdrawal"),
                                 *plan["lineage"]["registrations"]],
@@ -1058,6 +1252,9 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                        for row in provider_copy.plan_providers(Path(plan["site_root"]))["copies"]],
             "unknown": plan["provider_copies"]["unknown"],
             "not_deleted_at_provider": plan["provider_copies"]["not_deleted_at_provider"]}
+    if plan.get("offloaded_runs_older_than_site") is not None:
+        # Which runs the plan did not count as undetermined, and the two times it compared for each.
+        receipt["offloaded_runs_older_than_site"] = plan["offloaded_runs_older_than_site"]
     if authorization is not None:
         receipt["authorization"] = json.loads(json.dumps(dict(authorization)))
     receipt["digest"] = canonical_digest(receipt, digest_field="digest")

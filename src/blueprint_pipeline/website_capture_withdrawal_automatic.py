@@ -20,7 +20,12 @@ Each pass, with no operator:
    ``planning`` or ``applying`` before it starts (a run killed there is a failure the next
    pass records), then ``planned`` (with what it waits on), ``unresolved`` (with the reasons),
    ``legal_hold``, ``failed`` (with the error and the next attempt), ``scanning`` or ``applied``.
-   A failure backs off (1 h, 4 h, then 24 h) and is retried; nothing becomes terminal.
+   A failure backs off (1 h, 4 h, then 24 h) and is retried; nothing becomes terminal. A pass that
+   plans cleanly and then fails to apply is a failure in a row like any other, and keeps the time
+   the site has been blocked; only a pass that ends without an error clears the count. An apply
+   left ``incomplete`` only because no capture source bucket is named (``SOURCE_BUCKET_ENV``) is
+   not applied again until one is: its one receipt names what remains, and the state and summary
+   name the owner's step (``owner_action``).
    The plan keeps what each run's records name (``website_withdrawal_run_scan_cache``, under
    the report root) and reads only the runs that changed since. It stops reading at
    ``PLAN_READING_SECONDS`` into the pass, at a run's edge: the site is then ``scanning``, not
@@ -106,6 +111,11 @@ SITE_ROOTS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS"
 REPORT_ROOT_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_DELETION_REPORT_ROOT"
 SOURCE_BUCKET_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET"
 
+# An apply that ends incomplete only for want of a source bucket waits for one (``_due``).
+SOURCE_BUCKET_WAIT = "capture_source_bucket"
+SOURCE_BUCKET_OWNER_ACTION = (f"the owner sets {SOURCE_BUCKET_ENV} in the unit's environment file to the capture "
+                              "source bucket, with Google Cloud Storage credentials the unit can use; the next "
+                              "pass then deletes scenes/<site>/ there")
 # A failed attempt waits 1 h, then 4 h, then 24 h between tries, for as long as it fails.
 BACKOFF_SECONDS = (3600, 4 * 3600, 24 * 3600)
 FAILING_ALERT_COUNT = 3
@@ -459,10 +469,17 @@ def _cool_off_end(row: Mapping[str, Any], approval: Mapping[str, Any]) -> float 
     return float(row["acknowledged_at_epoch"]) + approval["approval"]["cool_off_hours"] * 3600
 
 
-def _due(row: Mapping[str, Any], approval: Mapping[str, Any], now: float) -> bool:
+def _due(row: Mapping[str, Any], approval: Mapping[str, Any], now: float,
+         source_bucket_configured: Callable[[], bool] | None = None) -> bool:
     state = row["state"]
     if state is None:
         return True
+    if (state["status"] == "incomplete" and set(state.get("waiting_on") or ()) == {SOURCE_BUCKET_WAIT}
+            and source_bucket_configured is not None and not source_bucket_configured()):
+        # Only the capture source bucket remains and none is named: applying again cannot change that, it
+        # only wrote another receipt (and, the time after, failed on the write-once receipt). The receipt
+        # names what remains and the state names who acts; the pass goes on once the bucket is set.
+        return False
     if state["status"] in {"failed", "incomplete"}:
         return now >= float(state.get("next_attempt_at_epoch") or 0)
     if state["status"] == "scanning":
@@ -529,7 +546,9 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], now: float,
         reasons: dict[str, int] = {}
         for item in plan["unresolved"]:
             reasons[str(item.get("reason"))] = reasons.get(str(item.get("reason")), 0) + 1
-        state.update(plan_digest=plan["digest"], planned_at_epoch=now, failure_count=0, last_error=None,
+        # failure_count is cleared only once the pass ends without an error (below): a clean plan followed by
+        # an apply that raises is one more failure in a row, not a fresh start.
+        state.update(plan_digest=plan["digest"], planned_at_epoch=now, last_error=None,
                      unresolved_count=len(plan["unresolved"]), unresolved_reasons=dict(sorted(reasons.items())[:20]),
                      money=money, legal_hold=plan["legal_hold"],
                      uncovered_pipeline_roots=list(plan["uncovered_pipeline_roots"]))
@@ -578,12 +597,17 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], now: float,
                                  row.get("holder") == "provider_copies_not_deleted" for row in reasons)
                                  else REPLAN_SECONDS),
                              blocked_since_epoch=(previous.get("blocked_since_epoch") or now) if reasons else None)
+                if any(row.get("holder") == SOURCE_BUCKET_WAIT for row in reasons):
+                    state["owner_action"] = SOURCE_BUCKET_OWNER_ACTION
     except ScanBudgetSpent as stopped:
         # Not a failure: every run read so far is kept, and the next pass plans the site again from there.
         state.update(status="scanning", waiting_on=["run_records_being_read"], failure_count=0, last_error=None,
                      run_scan=stopped.progress)
     except Exception as error:  # noqa: BLE001 - every failure is recorded and retried; nothing is terminal
-        state = _failed(state, _error_code(error), now)
+        # A failed pass keeps how long the withdrawal has been blocked; a clean plan earlier in it does not end that.
+        state = {**_failed(state, _error_code(error), now), "blocked_since_epoch": previous.get("blocked_since_epoch")}
+    else:
+        state["failure_count"] = 0
     _write_state(site, state)
     return state
 
@@ -694,7 +718,8 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
         counts["overdue"] += row["scene_id"] in overdue
         sites.append({"scene_id": row["scene_id"], "status": status or "not_planned",
                       "waiting_on": sorted(waiting), "failure_count": state.get("failure_count") or 0,
-                      "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
+                      "acknowledged_at_epoch": row["acknowledged_at_epoch"],
+                      **({"owner_action": state["owner_action"]} if state.get("owner_action") else {})})
     return {"schema_version": SUMMARY_SCHEMA, "observed_at_epoch": now,
             "approval": {"status": approval["status"], "reason": approval["reason"], "digest": approval["digest"],
                          "source": approval["source"],
@@ -730,7 +755,8 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
              applier: Callable[..., dict[str, Any]] | None = None,
              site_index_root: Path | None = None, indexed_roots: Sequence[Path] = (),
              index_budget: Mapping[str, Any] | None = None, backup_ledger: Path | None = None,
-             plan_reading_seconds: float | None = PLAN_READING_SECONDS) -> dict[str, Any]:
+             plan_reading_seconds: float | None = PLAN_READING_SECONDS,
+             source_bucket_configured: Callable[[], bool] | None = None) -> dict[str, Any]:
     """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted.
 
     ``release_approval_path`` is the release's committed approval, read only when ``approval_path`` holds no
@@ -739,7 +765,9 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
     ``backup_ledger`` is the state backup's ledger (default: ``control_plane_state_backup`` under its report
     root); a site is finished only once no backup generation older than its deletion survives.
     ``plan_reading_seconds`` is how far into the pass the plan may start reading another run's records
-    (only with a run scan cache in the resolution; None: no limit)."""
+    (only with a run scan cache in the resolution; None: no limit).
+    ``source_bucket_configured`` says whether the unit names a capture source bucket now; a site left
+    incomplete only for want of one is not applied again until it does (None: always applied again)."""
 
     started = time.monotonic()
 
@@ -777,7 +805,8 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
             # $0 and read-only, bounded per pass and resumable: the ownership index of the roots
             # with no per-site binding, read before the plan so it sees the newest entries.
             index_report = advance(site_index_root, indexed_roots, now=observed, **dict(index_budget or {}))
-        due = sorted((row for row in rows if row["receipt"] is None and _due(row, approval, observed)),
+        due = sorted((row for row in rows if row["receipt"] is None
+                      and _due(row, approval, observed, source_bucket_configured)),
                      key=lambda row: (float((row["state"] or {}).get("last_attempt_at_epoch") or -1), str(row["site"])))
         if due and not busy:
             row = due[0]
@@ -900,6 +929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     summary = run_pass(site_roots=roots, report_root=args.report_root, resolution=_production_resolution,
                        quiet=paid_stage_reasons, release_approval_path=RELEASE_APPROVAL_PATH,
+                       source_bucket_configured=lambda: bool(str(os.getenv(SOURCE_BUCKET_ENV) or "").strip()),
                        webhook_url=str(os.getenv(WEBHOOK_URL_ENV) or "").strip(),
                        site_index_root=args.report_root / SITE_INDEX_DIRNAME, indexed_roots=UNCOVERED_ROOTS)
     print(json.dumps({key: summary.get(key) for key in ("approval", "host", "withdrawals", "action", "alerts",

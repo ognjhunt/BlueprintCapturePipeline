@@ -510,6 +510,56 @@ def test_a_failing_plan_backs_off_and_is_retried_and_alerts_when_it_keeps_failin
     assert harness.state()["status"] == "planned" and harness.state()["failure_count"] == 0
 
 
+def test_an_apply_that_fails_counts_as_a_failure_in_a_row_and_an_apply_that_then_succeeds_clears_it(
+        harness, monkeypatch):
+    harness.approve()
+    real_apply = deletion.apply_withdrawal_deletion
+
+    def refused(**_arguments):
+        raise deletion.WithdrawalDeletionError("website_withdrawal_deletion_object_delete_refused")
+
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", refused)
+    harness.run()
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 1)
+    # Each pass plans cleanly and then fails to apply: the clean plan does not start the count again.
+    harness.run(offset=HOUR + 1)
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 2)
+    harness.run(offset=6 * HOUR)
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 3)
+    assert "website_withdrawal_deletion_failing" in harness.posted_codes()
+    assert harness.site_files() > 0
+    # The cause goes away: the next due pass applies, and the count is cleared.
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", real_apply)
+    harness.run(offset=31 * HOUR)
+    state = harness.state()
+    assert state["status"] == "applied" and state["failure_count"] == 0 and state["last_error"] is None, state
+    assert state["blocked_since_epoch"] is None
+
+
+def test_an_apply_that_fails_keeps_the_time_the_withdrawal_has_been_blocked(harness, monkeypatch):
+    harness.approve()
+    # A run offloaded as the site came cannot be judged without its archive: the plan is unresolved.
+    launches = harness.world["other_run"].parent
+    uri = drill._uri("control-plane-evidence", "9", "evidence.tar")
+    harness.world["store"].put(uri, b"a run archived as the site came")
+    pointer = drill._write(launches / "website-offloaded-as-the-site-came.offloaded.v1.json", drill._sealed({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+        "directory": "website-offloaded-as-the-site-came", "uri": uri, "members": [],
+        "retained_receipt_bytes": {}, "offloaded_at_epoch": harness.now}, "pointer_digest"))
+    harness.run()
+    assert harness.state()["status"] == "unresolved" and harness.state()["blocked_since_epoch"] == harness.now
+    # The owner settles that run by hand; the next plan is clean, and the apply then fails.
+    pointer.unlink()
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", lambda **_: (_ for _ in ()).throw(
+        deletion.WithdrawalDeletionError("website_withdrawal_deletion_object_delete_refused")))
+    harness.run(offset=automatic.REPLAN_SECONDS + 1)
+    state = harness.state()
+    assert state["status"] == "failed" and state["blocked_since_epoch"] == harness.now, state
+    assert harness.applies == ["walkthrough-req1"]
+    harness.run(offset=automatic.BLOCKED_ALERT_SECONDS + 1)
+    assert "website_withdrawal_deletion_unresolved" in harness.posted_codes()
+
+
 def test_a_pass_killed_inside_a_step_is_recorded_as_a_failure_with_backoff(harness):
     harness.run()
     state = harness.state()
@@ -1123,3 +1173,94 @@ def test_a_withdrawal_is_incomplete_until_its_backup_purge_receipt_exists(harnes
     assert summary["withdrawals"]["completed"] == 1 and summary["withdrawals"]["incomplete"] == 0
     assert summary["sites"][0]["backup_copies"] == "purged"
     assert summary["sites"][0]["status"] == "complete_provider_retention_remains"
+
+
+def _older_than_the_site(harness: Harness) -> tuple[list[Path], list[str]]:
+    """The host's shape: the site's first record days ago, and offloaded runs that left 14 hours before it."""
+
+    first = float(int(harness.now) - 5 * 86400)
+    capture = harness.captures["req1"]
+    drill._write(capture / "pipeline_job_ledger.json", {
+        "schema_version": "pipeline_job_ledger.v1", "revision": 9, "status": "completed",
+        "started_at": _iso(first).replace("+00:00", "Z"), "attempt_history": []})
+    launches = harness.world["other_run"].parent
+    canaries = harness.world["site_runs"][1].parent
+    pointers, uris = [], []
+    for root, name, digit in ((launches, "launch-website-legacy-trial-0101", "1"),
+                              (canaries, "team-scored-run-legacy-0103", "2")):
+        uri = drill._uri("control-plane-evidence", digit, "evidence.tar")
+        harness.world["store"].put(uri, b"an older run's archive")
+        pointers.append(drill._write(root / f"{name}.offloaded.v1.json", drill._sealed({
+            "schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+            "directory": name, "uri": uri, "members": [], "retained_receipt_bytes": {},
+            "offloaded_at_epoch": first - 14 * HOUR}, "pointer_digest")))
+        uris.append(uri)
+    pointers.append(harness.world["unrelated_older_pointer"]["path"])
+    uris.append(harness.world["unrelated_older_pointer"]["uri"])
+    return pointers, uris
+
+
+def test_offloaded_runs_older_than_the_site_wait_out_the_cool_off_and_the_apply_keeps_them(harness):
+    pointers, uris = _older_than_the_site(harness)
+    harness.approve(cool_off_hours=72)
+    harness.run()
+    state = harness.state()
+    # Before the fix: unresolved, website_withdrawal_deletion_offloaded_run_binding_undetermined, for ever.
+    assert state["status"] == "planned" and state["waiting_on"] == ["cool_off"], state
+    assert state["unresolved_count"] == 0 and harness.applies == []
+    plan = json.loads((harness.site() / "website_withdrawal" / automatic.PLAN_FILENAME).read_text())
+    assert sorted(Path(row["path"]).name for row in plan["offloaded_runs_older_than_site"]["runs"]) == sorted(
+        path.name[: -len(".offloaded.v1.json")] for path in pointers)
+    harness.run(offset=71 * HOUR)
+    assert harness.applies == []
+    harness.run(offset=72 * HOUR + 60)
+    state = harness.state()
+    assert state["status"] == "applied", state
+    receipt = _receipt(harness)
+    # What was deleted: the site's runs, pointer, objects and files. What remains: the older runs, untouched.
+    assert {Path(path).name for path in receipt["deleted"]["runs"]} >= {
+        "launch-req1-construction-0001", "team-scored-run-drill-0001"}
+    assert harness.site_files() == 0
+    assert all(path.is_file() for path in pointers)
+    assert all(harness.world["store"].versions_of(uri) == 1 for uri in uris)
+    kept = next(row for row in receipt["remaining"] if row["holder"] == "offloaded_runs_older_than_site")
+    assert kept["count"] == len(pointers)
+    for row in receipt["offloaded_runs_older_than_site"]["runs"]:
+        assert row["reason"] == "website_withdrawal_deletion_offloaded_run_predates_site"
+        assert row["offloaded_at_epoch"] + deletion.PREDATES_SITE_MARGIN_SECONDS < row["site_earliest_record_epoch"]
+    # Nothing is due once it is finished.
+    assert harness.run(offset=73 * HOUR)["action"] is None
+
+
+def test_without_a_source_bucket_one_receipt_names_it_and_the_pass_waits_until_one_is_set(harness):
+    harness.resolution["cloud_storage"] = None
+    harness.approve()
+    unset = {"source_bucket_configured": lambda: False}
+    harness.run(**unset)
+    state = harness.state()
+    assert state["status"] == "incomplete" and state["waiting_on"] == ["capture_source_bucket"]
+    assert automatic.SOURCE_BUCKET_ENV in state["owner_action"]
+    def receipts() -> list[Path]:
+        return sorted((harness.site() / "website_withdrawal" / "deletion_receipts").glob("*.json"))
+
+    assert len(receipts()) == 1
+    first = json.loads(receipts()[0].read_text())
+    assert first["deletion_status"] == deletion.INCOMPLETE
+    assert "capture_source_bucket" in {row["holder"] for row in first["incomplete_reasons"]}
+    assert "capture_source_bucket" in {row["holder"] for row in first["remaining"]}
+    # Before: applied again every 6 hours, a second receipt, then a write-once conflict every hour after.
+    for offset in (6 * HOUR + 60, 12 * HOUR + 60, 30 * HOUR):
+        summary = harness.run(offset=offset, **unset)
+        assert summary["action"] is None
+    assert len(receipts()) == 1 and harness.state()["status"] == "incomplete"
+    assert summary["sites"][0]["owner_action"] == state["owner_action"]
+    # Blocked for 72 hours: it pages, naming the source bucket.
+    harness.run(offset=73 * HOUR, **unset)
+    alert = next(alert for report in harness.posts for alert in report["alerts"]
+                 if alert["code"] == "website_withdrawal_deletion_unresolved")
+    assert alert["blockers"] == ["capture_source_bucket"]
+    # The owner names the bucket: the next pass applies and finishes.
+    harness.resolution["cloud_storage"] = harness.world["gcs"]
+    harness.run(offset=74 * HOUR, source_bucket_configured=lambda: True)
+    assert harness.state()["status"] == "applied" and len(receipts()) == 2
+    assert harness.world["gcs"].objects(f"scenes/{harness.site().name}/") == []
