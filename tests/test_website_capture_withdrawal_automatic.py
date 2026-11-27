@@ -510,6 +510,56 @@ def test_a_failing_plan_backs_off_and_is_retried_and_alerts_when_it_keeps_failin
     assert harness.state()["status"] == "planned" and harness.state()["failure_count"] == 0
 
 
+def test_an_apply_that_fails_counts_as_a_failure_in_a_row_and_an_apply_that_then_succeeds_clears_it(
+        harness, monkeypatch):
+    harness.approve()
+    real_apply = deletion.apply_withdrawal_deletion
+
+    def refused(**_arguments):
+        raise deletion.WithdrawalDeletionError("website_withdrawal_deletion_object_delete_refused")
+
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", refused)
+    harness.run()
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 1)
+    # Each pass plans cleanly and then fails to apply: the clean plan does not start the count again.
+    harness.run(offset=HOUR + 1)
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 2)
+    harness.run(offset=6 * HOUR)
+    assert (harness.state()["status"], harness.state()["failure_count"]) == ("failed", 3)
+    assert "website_withdrawal_deletion_failing" in harness.posted_codes()
+    assert harness.site_files() > 0
+    # The cause goes away: the next due pass applies, and the count is cleared.
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", real_apply)
+    harness.run(offset=31 * HOUR)
+    state = harness.state()
+    assert state["status"] == "applied" and state["failure_count"] == 0 and state["last_error"] is None, state
+    assert state["blocked_since_epoch"] is None
+
+
+def test_an_apply_that_fails_keeps_the_time_the_withdrawal_has_been_blocked(harness, monkeypatch):
+    harness.approve()
+    # A run offloaded as the site came cannot be judged without its archive: the plan is unresolved.
+    launches = harness.world["other_run"].parent
+    uri = drill._uri("control-plane-evidence", "9", "evidence.tar")
+    harness.world["store"].put(uri, b"a run archived as the site came")
+    pointer = drill._write(launches / "website-offloaded-as-the-site-came.offloaded.v1.json", drill._sealed({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+        "directory": "website-offloaded-as-the-site-came", "uri": uri, "members": [],
+        "retained_receipt_bytes": {}, "offloaded_at_epoch": harness.now}, "pointer_digest"))
+    harness.run()
+    assert harness.state()["status"] == "unresolved" and harness.state()["blocked_since_epoch"] == harness.now
+    # The owner settles that run by hand; the next plan is clean, and the apply then fails.
+    pointer.unlink()
+    monkeypatch.setattr(deletion, "apply_withdrawal_deletion", lambda **_: (_ for _ in ()).throw(
+        deletion.WithdrawalDeletionError("website_withdrawal_deletion_object_delete_refused")))
+    harness.run(offset=automatic.REPLAN_SECONDS + 1)
+    state = harness.state()
+    assert state["status"] == "failed" and state["blocked_since_epoch"] == harness.now, state
+    assert harness.applies == ["walkthrough-req1"]
+    harness.run(offset=automatic.BLOCKED_ALERT_SECONDS + 1)
+    assert "website_withdrawal_deletion_unresolved" in harness.posted_codes()
+
+
 def test_a_pass_killed_inside_a_step_is_recorded_as_a_failure_with_backoff(harness):
     harness.run()
     state = harness.state()

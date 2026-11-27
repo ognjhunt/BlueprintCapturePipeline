@@ -20,7 +20,9 @@ Each pass, with no operator:
    ``planning`` or ``applying`` before it starts (a run killed there is a failure the next
    pass records), then ``planned`` (with what it waits on), ``unresolved`` (with the reasons),
    ``legal_hold``, ``failed`` (with the error and the next attempt), ``scanning`` or ``applied``.
-   A failure backs off (1 h, 4 h, then 24 h) and is retried; nothing becomes terminal. An apply
+   A failure backs off (1 h, 4 h, then 24 h) and is retried; nothing becomes terminal. A pass that
+   plans cleanly and then fails to apply is a failure in a row like any other, and keeps the time
+   the site has been blocked; only a pass that ends without an error clears the count. An apply
    left ``incomplete`` only because no capture source bucket is named (``SOURCE_BUCKET_ENV``) is
    not applied again until one is: its one receipt names what remains, and the state and summary
    name the owner's step (``owner_action``).
@@ -544,7 +546,9 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], now: float,
         reasons: dict[str, int] = {}
         for item in plan["unresolved"]:
             reasons[str(item.get("reason"))] = reasons.get(str(item.get("reason")), 0) + 1
-        state.update(plan_digest=plan["digest"], planned_at_epoch=now, failure_count=0, last_error=None,
+        # failure_count is cleared only once the pass ends without an error (below): a clean plan followed by
+        # an apply that raises is one more failure in a row, not a fresh start.
+        state.update(plan_digest=plan["digest"], planned_at_epoch=now, last_error=None,
                      unresolved_count=len(plan["unresolved"]), unresolved_reasons=dict(sorted(reasons.items())[:20]),
                      money=money, legal_hold=plan["legal_hold"],
                      uncovered_pipeline_roots=list(plan["uncovered_pipeline_roots"]))
@@ -600,7 +604,10 @@ def _handle(row: Mapping[str, Any], *, approval: Mapping[str, Any], now: float,
         state.update(status="scanning", waiting_on=["run_records_being_read"], failure_count=0, last_error=None,
                      run_scan=stopped.progress)
     except Exception as error:  # noqa: BLE001 - every failure is recorded and retried; nothing is terminal
-        state = _failed(state, _error_code(error), now)
+        # A failed pass keeps how long the withdrawal has been blocked; a clean plan earlier in it does not end that.
+        state = {**_failed(state, _error_code(error), now), "blocked_since_epoch": previous.get("blocked_since_epoch")}
+    else:
+        state["failure_count"] = 0
     _write_state(site, state)
     return state
 

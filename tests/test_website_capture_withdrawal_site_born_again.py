@@ -416,10 +416,6 @@ def test_a_sealed_journal_with_a_later_time_cannot_clear_more_while_the_sites_fi
     assert json.loads(journal.read_text()) == later  # and the plan does not rewrite it
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "REVIEW FINDING, older than commit 4b2652b and reachable once it lets an apply run: a plan that succeeds "
-    "sets failure_count to 0 and clears blocked_since_epoch, so an apply that fails on every pass never reaches "
-    "the failing alert or the blocked alert; only the 21-day overdue page fires. Remove this marker with the fix."))
 def test_an_apply_that_fails_on_every_pass_is_paged_before_the_withdrawal_is_three_weeks_old(tmp_path):
     from tests.test_website_capture_withdrawal_automatic import Harness
 
