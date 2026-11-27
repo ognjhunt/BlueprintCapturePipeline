@@ -841,6 +841,29 @@ def test_a_preparation_held_for_the_site_ends_the_job_by_its_code(monkeypatch, l
     assert report["preparation"] == {"status": handoff["status"], "blockers": handoff["blockers"]}
 
 
+def test_a_job_whose_workspace_storage_retired_is_said_so_not_stalled(monkeypatch):
+    """Stress test, 2026-11-27: six finished test jobs whose workspaces retention had retired read as "stalled: no
+    package and no ending", which is not true. With no capture folder and the scene's retirement receipt beside the
+    scenes, the line says the workspace was retired; the receipt is named, not verified here (the door cannot serve
+    it), so nothing is said of how the job ended."""
+    import time as clock
+
+    runner = _runner()
+    monkeypatch.setattr(clock, "time", lambda: NOW + 60)
+    scenes = "/var/lib/blueprint/pubsub-handoffs/b/scenes"
+    listing = {runner.HANDOFFS: [{"name": "b"}],
+               scenes: [{"name": "site-itest-1.retired.v1.json", "type": "file", "mtime": 9}]}
+    monkeypatch.setattr(runner, "cat_json", lambda path: None)
+    monkeypatch.setattr(runner, "ls", lambda path, match=None: [
+        row for row in listing.get(path, []) if match is None or row["name"] == match])
+    report = runner.job_report({"label": "wipe-the-table", "footage_id": "reference-job", "job_id": "itest-1",
+                                "capture_id": "walkthrough-itest-1", "submitted_at": 1}, {})
+    assert (report["stage"], report["first_failure"]) == ("workspace_retired", None)
+    assert report["retired_receipt"] == f"{scenes}/site-itest-1.retired.v1.json"
+    assert report["times"]["workspace_retired"] == 9
+    assert runner.done(report)
+
+
 def test_the_report_names_the_packages_files(monkeypatch):
     manifest = {"delivered": {"at": 6}, "package": {"digest": "sha256:" + "d" * 64,
                                                     "files": ["README.txt", "scene.usda", "success_rule.json"]}}

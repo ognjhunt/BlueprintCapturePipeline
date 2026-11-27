@@ -403,6 +403,7 @@ class _Harness:
     def _guard(self, stack: ExitStack) -> None:
         connect, connect_ex, resolve = socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo
         popen, exists, is_file, opener = subprocess.Popen.__init__, pathlib.Path.exists, pathlib.Path.is_file, io.open
+        resolve_path, stat_path = pathlib.Path.resolve, pathlib.Path.stat
 
         def refuse(target: Any) -> None:
             self.network.append({"target": str(target), "call_site": self.origin()["call_site"]})
@@ -439,6 +440,31 @@ class _Harness:
                 return found
             return probe
 
+        # A strict resolve or a stat that finds nothing looked for the path as a false ``exists`` does (stress test,
+        # 2026-11-27: the package compile checks each scene asset with ``resolve(strict=True)``, so an asset never
+        # pulled read as not shipped on a job the host had delivered).
+        # A plain resolve stats its result only to find a link loop (``pathlib``): that looks for nothing.
+        resolving = [0]
+
+        def resolved(path: Any, strict: bool = False) -> Any:
+            resolving[0] += 1
+            try:
+                return resolve_path(path, strict=strict)
+            except FileNotFoundError:
+                if strict:
+                    self.note(self.absent, path)
+                raise
+            finally:
+                resolving[0] -= 1
+
+        def stated(path: Any, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return stat_path(path, *args, **kwargs)
+            except FileNotFoundError:
+                if not resolving[0]:
+                    self.note(self.absent, path)
+                raise
+
         def opened(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
             stream = opener(file, mode, *args, **kwargs)
             if isinstance(file, (str, bytes, os.PathLike)) and not set(mode) & set("wax+"):
@@ -452,6 +478,8 @@ class _Harness:
         _set(stack, subprocess.Popen, "__init__", spawn)
         _set(stack, pathlib.Path, "exists", probed(exists))
         _set(stack, pathlib.Path, "is_file", probed(is_file))
+        _set(stack, pathlib.Path, "resolve", resolved)
+        _set(stack, pathlib.Path, "stat", stated)
         _set(stack, io, "open", opened)
         _set(stack, builtins, "open", opened)
 

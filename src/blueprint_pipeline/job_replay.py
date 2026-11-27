@@ -94,6 +94,13 @@ SMALL_BYTES = 256 * 1024
 #: A record larger than this is bulk all the same (the door serves at most 16 MiB a read; records are smaller).
 MAXIMUM_RECORD_BYTES = 64 * 1024 * 1024
 DEFAULT_ROUNDS = 8
+#: ``--keep-package``: the package stage copies the zip it builds into its run folder as ``package.zip`` and the report
+#: names it (``package.kept``). The door does not serve a package that holds an object (``object.usdz`` is a nested
+#: archive, ``secret_content_refused:nested_compressed_member``); a replay that rebuilds it with the digest the host's
+#: manifest records has the same bytes, so a session checks those (stress test, 2026-11-27).
+KEEP_PACKAGE_ENV = "BLUEPRINT_JOB_REPLAY_KEEP_PACKAGE"
+#: The worker's run folder, where a kept package goes; set by the worker only.
+_RUN_DIR: Path | None = None
 #: A listed folder's unpulled files are pulled when together they are at most this large.
 LISTED_PULL_BYTES = 64 * 1024 * 1024
 #: Paths outside the capture a stage may name (a scene intent, the team scene queue); each is looked up once.
@@ -1085,6 +1092,10 @@ def _company_group(capture_root: Path, *, commit: str, watched: str, **_: Any) -
             with zipfile.ZipFile(path) as zipped:
                 members = zipped.namelist()
             built.update(path=str(path), digest=_sha256_file(path), size_bytes=path.stat().st_size, members=members)
+            if os.environ.get(KEEP_PACKAGE_ENV) == "1" and _RUN_DIR is not None:
+                kept = _RUN_DIR / "package.zip"
+                shutil.copyfile(path, kept)
+                built["kept"] = str(kept)
             harness.stop("external_effect", "artifact_store:" + simulation.ARTIFACT_KIND)
 
         def retract(uri: str) -> None:
@@ -1549,8 +1560,10 @@ def table(report: Mapping[str, Any]) -> str:
 # ------------------------------------------------------------------------------------------------------ commands
 
 def _worker_main(args: argparse.Namespace) -> int:
+    global _RUN_DIR
     isolation = _isolate_process()
     run_dir = Path(args.run_dir)
+    _RUN_DIR = run_dir
     rows = _GROUP_RUNNERS[args.worker](Path(args.target), past=args.past, commit=args.source_commit,
                                        steps=args.steps, watched=args.watched)
     value = {"rows": rows, "process_network_attempts": list(isolation["attempts"]),
@@ -1574,6 +1587,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, help="Atlas controller steps (default: until it stops)")
     parser.add_argument("--report", help="also write the JSON report here")
     parser.add_argument("--keep", action="store_true", help="keep the work copies")
+    parser.add_argument("--keep-package", action="store_true",
+                        help="keep the zip the package stage builds, as package.zip in its run folder")
     parser.add_argument("--inner", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker", choices=sorted(_GROUP_RUNNERS), help=argparse.SUPPRESS)
     parser.add_argument("--run-dir", help=argparse.SUPPRESS)
@@ -1589,6 +1604,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a request id or capture root is required")
     if args.rounds < 0:
         parser.error("--rounds must be 0 or more")
+    if args.keep_package:
+        os.environ[KEEP_PACKAGE_ENV] = "1"  # read by the package stage's worker, two processes down
     report = replay_job(args.target, scratch=args.scratch, past=args.past, rounds=args.rounds,
                         pull_all=args.pull_all, pull_globs=args.pull, steps=args.steps, keep=args.keep,
                         offline=args.offline, report_to=args.report)
