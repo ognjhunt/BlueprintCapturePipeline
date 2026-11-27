@@ -24,6 +24,15 @@
    ]
   },
   "notes": {
+   "plan_needs_cup_and_carton": "What this simulation needs, as Blueprint's model read the job: cup and carton.",
+   "plan_needs_cup_and_mug_box": "What this simulation needs, as Blueprint's model read the job: cup and mug box.",
+   "plan_needs_cup_and_can": "What this simulation needs, as Blueprint's model read the job: cup and can.",
+   "plan_needs_cup_and_toy": "What this simulation needs, as Blueprint's model read the job: cup and toy.",
+   "plan_takes_out_cup": "The plan takes this out of the scan to build as its own object: cup.",
+   "plan_also_built_carton": "Also built as its own object, where the video shows it: carton.",
+   "plan_also_built_mug_box": "Also built as its own object, where the video shows it: mug box.",
+   "plan_left_in_scan_can_needs_generated_model": "Left in the scan as filmed, not built on its own: can, because it needs a model Blueprint would generate, and none was made for it.",
+   "plan_left_in_scan_toy_needs_generated_model": "Left in the scan as filmed, not built on its own: toy, because it needs a model Blueprint would generate, and none was made for it.",
    "furniture_removed": "movable items the site agreed to move are not in the collision file; they still appear in the look file.",
    "appearance_quality_not_passed": "The look file did not pass Blueprint's image quality check; it is included as it is.",
    "surface_estimated": "The destination shelf or surface the job's object is placed on did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video. That estimate is in the collision file, not in the look file.",
@@ -42,6 +51,9 @@
    "object_generated": "The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are the generator's estimate, not a scan or a measurement.",
    "object_designed": "The job's object was not filmed: it is a simple shape Blueprint designed for the job.",
    "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
+   "scored_only_object_02": "success_rule.json scores only the job's object, /World/Object. /World/Object_02 is also the job's objects, placed where the video shows them; the rule does not score it.",
+   "further_held_object_02_carton_parametric": "The package also holds /World/Object_02 (carton): a plain carton shape Blueprint made for it, sized from the video, with none of the real object's detail. It stands where the video shows it; that position is an estimate from the video, not a measurement.",
+   "further_held_object_02_mug_box_library": "The package also holds /World/Object_02 (mug box): a model of the same kind of object from a public library, picked and sized from the video and credited under Library models; it is not the site's own object. It stands where the video shows it; that position is an estimate from the video, not a measurement.",
    "estimates_from_video": "The object's mass range in success_rule.json comes from its size in the video and typical densities; its friction range is Blueprint's standard default.",
    "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's.",
    "variations_heading": "Simulated variations",
@@ -53,10 +65,14 @@
    "variations_rule": "success_rule.json is the same for every variant: it was set for the object as in scene.usda.",
    "variations_object_size_and_mass_default": "/World/Object: size (default) and mass (default).",
    "variations_object_friction_default": "/World/Object: friction (default).",
+   "variations_object_size_and_mass_video_estimate": "/World/Object: size (video_estimate) and mass (video_estimate).",
+   "variations_object_02_size_mass_video_estimate_friction_default": "/World/Object_02: size (video_estimate), mass (video_estimate) and friction (default).",
    "variations_library": "The variants change the size and mass of the library model credited under Library models; its own file is unchanged.",
+   "variations_library_object_02": "The variants change the size, mass and friction of the library model credited under Library models; its own file is unchanged.",
    "library_heading": "Library models",
    "library_credit_model_file": "scene/files/library_model.usda and object.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
    "library_credit_model_file_and_variations": "scene/files/library_model.usda, object.usda and variations.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
+   "library_credit_mug_box_object_02_and_variations": "scene/object_02.usda and variations.usda: Test Mug Box by Google, from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Test_Mug_Box/1/Test_Mug_Box.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
    "library_carve_out": "These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares this package under do not restrict them."
   }
  },
@@ -1250,6 +1266,224 @@
      "variations_object_size_and_mass_default"
     ],
     "readme_sha256": "sha256:6640eb1df2ab634a70a1cf1fd27ed9580fcf982e77c3826a82f26e399995caa9"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the cup onto the tray."
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "further_objects": [
+     "carton-1"
+    ]
+   },
+   "label": "several-objects-carton-built-free",
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "plan_needs_cup_and_carton",
+     "plan_takes_out_cup",
+     "plan_also_built_carton",
+     "not_run",
+     "object_generated",
+     "scored_only_object_02",
+     "further_held_object_02_carton_parametric",
+     "estimates_from_video",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_video_estimate",
+     "variations_object_02_size_mass_video_estimate_friction_default"
+    ],
+    "readme_sha256": "sha256:b360f436103eb2e52bb7e3a241966486cce72068a526372030e99a4ca4753fb9"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the cup onto the tray."
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "further_objects": [
+     "mug-1"
+    ]
+   },
+   "label": "several-objects-library-model-built-free",
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "plan_needs_cup_and_mug_box",
+     "plan_takes_out_cup",
+     "plan_also_built_mug_box",
+     "not_run",
+     "object_generated",
+     "scored_only_object_02",
+     "further_held_object_02_mug_box_library",
+     "estimates_from_video",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_video_estimate",
+     "variations_object_02_size_mass_video_estimate_friction_default",
+     "variations_library_object_02",
+     "library_heading",
+     "library_credit_mug_box_object_02_and_variations",
+     "library_carve_out"
+    ],
+    "readme_sha256": "sha256:2c305512bc5674b5deb88b520e547308c614a3a583b382266461f8fa5e2fcf2b"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the cup onto the tray."
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "further_objects": [
+     "can-1"
+    ]
+   },
+   "label": "several-objects-can-stays-in-the-scan",
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "plan_needs_cup_and_can",
+     "plan_takes_out_cup",
+     "plan_left_in_scan_can_needs_generated_model",
+     "not_run",
+     "object_generated",
+     "estimates_from_video",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_video_estimate"
+    ],
+    "readme_sha256": "sha256:08dfda2ebd763bddb12436b420c00de89a627cc49e5261d77bdb2530ccde7782"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the cup onto the tray."
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "further_objects": [
+     "artisan-1"
+    ]
+   },
+   "label": "several-objects-generated-model-not-reserved-stays-in-the-scan",
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "plan_needs_cup_and_toy",
+     "plan_takes_out_cup",
+     "plan_left_in_scan_toy_needs_generated_model",
+     "not_run",
+     "object_generated",
+     "estimates_from_video",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_video_estimate"
+    ],
+    "readme_sha256": "sha256:7d1c7e29b330bb740da9b7cd893cf730115a7eb79cf22bb1adb003aaf1b4f260"
    }
   }
  ]
