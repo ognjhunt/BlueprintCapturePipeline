@@ -488,7 +488,9 @@ def test_pointer_adopts_the_evidence_root_owner_so_the_service_user_can_read_it(
     must adopt the evidence root's owner/group (a no-op when the GC already runs
     as that user)."""
     import os as _os
+    from blueprint_pipeline import control_plane_evidence_offload as offload
 
+    monkeypatch.setattr(offload, "_service_gid", lambda: None)  # a host without the service group
     root = tmp_path / "runs"
     root.mkdir()
     _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
@@ -505,6 +507,78 @@ def test_pointer_adopts_the_evidence_root_owner_so_the_service_user_can_read_it(
     assert chowned and chowned[-1][1:] == (owner.st_uid, owner.st_gid)
     assert chowned[-1][0].startswith(".run-1.pointer-")  # adopted BEFORE the atomic publish
     assert oct(pointer.stat().st_mode & 0o777) == "0o440"
+
+
+def test_a_pointer_in_a_root_owned_evidence_root_is_readable_by_the_service_group(tmp_path, monkeypatch):
+    """2026-11-27: two of the clean-up unit's four evidence roots belong to root. A pointer that took the root's
+    owner and group there was root:root 0440, so the ``blueprint`` service user (the withdrawal deletion) could
+    not read it and the withdrawal plan stayed unresolved. A pointer takes the root's owner and the service
+    group; under a root the service account owns, that is the root's group anyway."""
+    import os as _os
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    monkeypatch.setattr(offload, "_service_gid", lambda: 4242)
+    root = tmp_path / "runs"
+    root.mkdir()
+    _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    chowned = []
+    monkeypatch.setattr(_os, "chown", lambda path, uid, gid: chowned.append((Path(path).name, uid, gid)))
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=functools.partial(
+        store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket=BUCKET))
+    assert result["offloaded_count"] == 1
+    assert chowned[-1][0].startswith(".run-1.pointer-") and chowned[-1][1:] == (root.stat().st_uid, 4242)
+
+
+def _stale_pointer_root(tmp_path):
+    """A root holding a pointer only its owner may read, a pointer-named link to a file elsewhere and a
+    non-pointer file, all mode 0400."""
+    root = tmp_path / "runs"
+    root.mkdir()
+    stale = root / ("run-1" + POINTER_SUFFIX)
+    stale.write_text("{}", encoding="utf-8")
+    target = tmp_path / "elsewhere.json"
+    target.write_text("{}", encoding="utf-8")
+    (root / ("run-2" + POINTER_SUFFIX)).symlink_to(target)
+    other = root / "run-3.json"
+    other.write_text("{}", encoding="utf-8")
+    for path in (stale, target, other):
+        path.chmod(0o400)
+    return root, stale, target, other
+
+
+def test_repair_gives_each_unreadable_pointer_the_new_pointer_owner_and_never_follows_a_link(tmp_path, monkeypatch):
+    """Pointers written before 2026-09-06 (#1739) are root:root 0440: the service user cannot read them (71 on
+    the host on 2026-11-27, besides the 4 in root-owned roots). The clean-up unit, which runs as root, gives
+    each the owner a new pointer gets, on the open file. A link, a non-pointer and a pointer already right are
+    left alone."""
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    root, stale, target, other = _stale_pointer_root(tmp_path)
+    uid, gid = root.stat().st_uid, root.stat().st_gid
+    monkeypatch.setattr(offload, "_pointer_owner", lambda directory: (uid, 4242))
+    chowned = []
+    monkeypatch.setattr(offload.os, "fchown", lambda fd, user, group: chowned.append((os.fstat(fd).st_ino, user, group)))
+    report = offload.repair_pointer_access([root], apply=True)
+    assert report == {"applied": True, "repaired": [str(stale)], "failed": []}
+    assert chowned == [(stale.stat().st_ino, uid, 4242)]
+    assert stale.stat().st_mode & 0o777 == 0o440
+    assert target.stat().st_mode & 0o777 == 0o400 and other.stat().st_mode & 0o777 == 0o400
+    monkeypatch.setattr(offload, "_pointer_owner", lambda directory: (uid, gid))
+    chowned.clear()
+    assert offload.repair_pointer_access([root], apply=True)["repaired"] == [] and chowned == []
+
+
+def test_a_pointer_repair_dry_run_names_what_it_would_change_and_changes_nothing(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    root, stale, _target, _other = _stale_pointer_root(tmp_path)
+    monkeypatch.setattr(offload, "_pointer_owner", lambda directory: (root.stat().st_uid, 4242))
+    monkeypatch.setattr(offload.os, "fchown", lambda *args: pytest.fail("a dry run changed an owner"))
+    assert offload.repair_pointer_access([root, tmp_path / "absent"], apply=False) == {
+        "applied": False, "repaired": [str(stale)], "failed": []}
+    assert stale.stat().st_mode & 0o777 == 0o400
 
 
 def test_pointer_ownership_failure_keeps_the_evidence(tmp_path, monkeypatch):

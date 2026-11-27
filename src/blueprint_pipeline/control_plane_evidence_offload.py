@@ -12,6 +12,7 @@ reverses the migration byte-for-byte.  Nothing here ever touches
 
 from __future__ import annotations
 
+import grp
 import hashlib
 import base64
 import json
@@ -43,6 +44,9 @@ RESTORE_SCHEMA_VERSION = "control_plane_evidence_restore_receipt.v1"
 ARTIFACT_KIND = "control-plane-evidence"
 EXECUTE_ACK = "offload-sealed-evidence"
 POINTER_SUFFIX = ".offloaded.v1.json"
+# Every reader of a pointer runs as this service account: the withdrawal deletion, the owner terminal
+# reconciler and the door. The clean-up unit, which writes pointers, runs as root.
+SERVICE_GROUP = "blueprint"
 # A result run's residue pointer and restore receipt (task_evaluation_result_residue_offload)
 # sit beside the run too. Like this module's own pointer they are files, never runs.
 RESIDUE_POINTER_SUFFIX = ".residue.v1.json"
@@ -500,6 +504,78 @@ def _adopt_root_owner(path: Path, root: Path) -> None:
     os.chown(path, owner.st_uid, owner.st_gid)
 
 
+def _service_gid() -> int | None:
+    """The service group's id; None on a host without the service account (development)."""
+
+    try:
+        return grp.getgrnam(SERVICE_GROUP).gr_gid
+    except KeyError:
+        return None
+
+
+def _pointer_owner(root: Path) -> tuple[int, int]:
+    """The owner a pointer gets: the evidence root's owner, and the service group.
+
+    A pointer is 0440, so its group decides whether the service account can read it. With the root's own
+    group, a pointer in a root that root owns was root:root and unreadable to every reader (four on
+    2026-11-27, which kept a withdrawal unresolved). Under a root the service account owns, the service
+    group is the root's group anyway.
+    """
+
+    owner = root.stat()
+    service = _service_gid()
+    return owner.st_uid, owner.st_gid if service is None else service
+
+
+def repair_pointer_access(roots: Sequence[Path], *, apply: bool) -> dict[str, Any]:
+    """Give each pointer the service account cannot read the owner a new pointer gets (``_pointer_owner``).
+
+    Pointers written before 2026-09-06 (#1739) are root:root 0440, and so were new ones in a root that root
+    owns: 75 on 2026-11-27, and the withdrawal plan stayed unresolved until they could be read. The clean-up
+    unit, which runs as root, runs this on every applied run; a dry run (``apply=False``) only names them.
+    Only regular ``*.offloaded.v1.json`` files directly in each root, with one link, are changed, on the open
+    file: a symbolic link is never followed and nothing else is touched. A failure is named, never raised.
+    """
+
+    repaired: list[str] = []
+    failed: list[dict[str, str]] = []
+    for root in roots:
+        root = Path(root)
+        try:
+            owner = _pointer_owner(root)
+            entries = sorted(os.scandir(root), key=lambda entry: entry.name)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            failed.append({"path": str(root), "error": type(error).__name__})
+            continue
+        for entry in entries:
+            if not entry.name.endswith(POINTER_SUFFIX) or entry.name.startswith(".") or entry.is_symlink():
+                continue
+            try:
+                descriptor = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError as error:
+                failed.append({"path": entry.path, "error": type(error).__name__})
+                continue
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    failed.append({"path": entry.path, "error": "not_a_single_regular_file"})
+                    continue
+                if (info.st_uid, info.st_gid) == owner and info.st_mode & stat.S_IRGRP:
+                    continue
+                if apply:
+                    os.fchown(descriptor, *owner)
+                    if not info.st_mode & stat.S_IRGRP:
+                        os.fchmod(descriptor, stat.S_IMODE(info.st_mode) | stat.S_IRGRP)
+                repaired.append(entry.path)
+            except OSError as error:
+                failed.append({"path": entry.path, "error": type(error).__name__})
+            finally:
+                os.close(descriptor)
+    return {"applied": bool(apply), "repaired": repaired, "failed": failed}
+
+
 def apply_evidence_offload(
     manifest: Mapping[str, Any],
     *,
@@ -592,7 +668,7 @@ def apply_evidence_offload(
             temporary = root / f".{name}.pointer-{os.getpid()}.tmp"
             temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             temporary.chmod(0o440)
-            _adopt_root_owner(temporary, root)
+            os.chown(temporary, *_pointer_owner(root))
             os.replace(temporary, pointer)
             shutil.rmtree(directory)
         except Exception as exc:  # noqa: BLE001 - every candidate is independent

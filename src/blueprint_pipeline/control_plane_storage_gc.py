@@ -84,6 +84,7 @@ from .control_plane_evidence_offload import (
     EXECUTE_ACK as OFFLOAD_ACK,
     apply_evidence_offload,
     build_evidence_offload_manifest,
+    repair_pointer_access,
 )
 from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
@@ -1449,6 +1450,8 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if evidence_present:
         def evidence_phase() -> None:
+            # Every pointer the service account cannot read gets the owner a new pointer gets, offload on or not.
+            report["pointer_access"] = repair_pointer_access(evidence_present, apply=apply)
             observed_text, observed_unreadable = _settlement_reference_text(settlement_roots)
             report["evidence_settlement_reference"] = {
                 "roots": [str(Path(root).expanduser()) for root in settlement_roots],

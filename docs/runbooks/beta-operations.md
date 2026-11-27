@@ -1065,12 +1065,16 @@ Two older gaps, closed by stop-gaps on 2026-11-27:
 
 What the owner does around the first apply:
 
-1. The door could not open 74 pointer files on 2026-11-27. The door runs as
-   `blueprint`, the same user as the deletion unit. If the unit cannot read
-   them either, the plan stays `unresolved` until their owner and group are
-   corrected as root. Give each the owner and group of its run root.
-   `control_plane_evidence_offload._adopt_root_owner` does that for each new
-   pointer.
+1. On 2026-11-27, 75 pointer files were `root:root 0440`, so `blueprint`
+   (the deletion unit's user) could not read them, and the plan stayed
+   `unresolved`. 71 were written before 2026-09-06 (#1739). 4 are in the two
+   evidence roots that root owns (`episode-interpretation-backfills`,
+   `policy-canary-preprovider-audits`), where the run root's owner and group
+   are root's. A pointer now takes the root's owner and the `blueprint` group
+   (`control_plane_evidence_offload._pointer_owner`). On every applied run,
+   the clean-up unit gives each pointer that does not match that owner the
+   same owner (`repair_pointer_access`, report key `pointer_access`; a dry
+   run only names them). The unit runs as root.
 2. Set `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in
    `/etc/blueprint/pipeline-control-plane.env` before the first apply, with
    Google Cloud Storage credentials the unit can use. Set afterwards, the
