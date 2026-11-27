@@ -1240,6 +1240,18 @@ reconstructions, run evidence and the site-derived stores. Caches, scratch and
 releases are skipped too. Each run's report (`control-plane-backup/latest.json`)
 names every skipped root and why, and counts what a size bound left out.
 
+One part of an allowlisted root is left out on purpose: under
+`gpu_spend_guard/`, the billing reconciler's `billing-audit/` (every provider
+billing response it ever fetched, one folder about every ten minutes) and
+`metered-call-events/` (its log of those calls). On 2026-11-27 `billing-audit/`
+held 72,235 folders of about 1.4 MB each. The first two runs on the host
+stopped at the time bound inside it, at 3.3 GB and at 5.2 GB. The next
+reconciler run refetches what it needs, and a restore waits for that run
+before paid admission reopens. The spend ledger, the admission lock, the
+billing export and the daily snapshot beside those folders are backed up. A
+host that is lost loses that history of raw provider responses; the providers
+keep their own invoices.
+
 - Encryption: AES-GCM under a key made for that generation alone. That key is
   sealed to the owner's public key and travels in the generation's seal. The
   public key is a committed file every release carries,

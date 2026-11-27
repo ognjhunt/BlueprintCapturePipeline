@@ -154,8 +154,19 @@ ALLOWLIST: tuple[BackupRoot, ...] = (
             f"{_CP}/disk-reservations", f"{_CP}/provider-locks", f"{_CP}/release-leases", f"{_CP}/remote-cpu-jobs",
             f"{_CP}/storage-pins", f"{_CP}/submission-publication-locks", "/var/lib/blueprint/scene-retirement/coordinator",
             "/var/lib/blueprint/scene-retirement/generations", "/var/lib/blueprint/spend-authority"),
-    *_roots(False, "money records: spend ledgers, billing audit, reconciliations and screening budgets",
-            f"{_CP}/gpu_spend_guard", f"{_CP}/account-monthly-spend", f"{_CP}/scene-project-spend",
+    # The spend guard's ledger, admission lock, billing export and daily snapshot. Not the billing reconciler's
+    # own evidence trail beside them: billing-audit/ keeps every provider billing response it ever fetched
+    # (one folder about every ten minutes, 72,235 of them and about 1.4 MB each on 2026-11-27, hard links to
+    # shared objects that a backup would read once per link), and metered-call-events/ logs each of those
+    # calls. Both are refetched or rewritten by the next reconciler run, which a restore waits for before paid
+    # admission reopens (control_plane_restore_money_hold). With them a run never finished: the first two on
+    # the host stopped at the time bound inside this root, at 3.3 GB and at 5.2 GB.
+    BackupRoot(f"{_CP}/gpu_spend_guard", False,
+               "money records: the spend ledger, the admission lock, the billing export and the daily snapshot; "
+               "the billing reconciler's retained provider responses and call log are not backed up",
+               exclude=("billing-audit", "metered-call-events")),
+    *_roots(False, "money records: spend reports, reconciliations and screening budgets",
+            f"{_CP}/account-monthly-spend", f"{_CP}/scene-project-spend",
             f"{_CP}/beta-policy-screening", f"{_CP}/agent-execution"),
     *_roots(False, "receipts, standing authorizations and owner-bound consents",
             f"{_CP}/deploy-receipts", f"{_CP}/standing-authorizations", f"{_CP}/cleanup-receipts",
