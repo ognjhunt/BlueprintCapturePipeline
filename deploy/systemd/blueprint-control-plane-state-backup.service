@@ -10,7 +10,7 @@ After=network-online.target
 # which the release carries, and the bytes go under their own prefix of the B2 bucket the host already
 # writes job artifacts to. A release without the public key, or a host without that bucket's files, skips
 # the run (not failed). Once a backup has completed, the stall alarm pages control_plane_backup_stale if
-# none completes for two hours, whether or not this unit runs.
+# none completes for three hours, whether or not this unit runs.
 ConditionPathExists=/opt/blueprint/task-evaluation-control-plane/config/control_plane_state_backup_recipient.v1.json
 ConditionPathExists=/etc/blueprint/provider-secrets/backblaze_b2_bucket
 

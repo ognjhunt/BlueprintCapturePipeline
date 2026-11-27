@@ -295,6 +295,12 @@ Intended design: every upload is written to one record before it is sent, and st
 - **The private key:** handed to the owner as a file on 2026-11-26. It is in no repository and on no host.
 - **Not proven:** no backup has run on the host yet, so it is not known that the artifact store's key may list and delete object versions under the new prefix, or what lifecycle rules the bucket has. No restore, drill or rebuild has run. Runbook: the last section of `docs/runbooks/beta-operations.md`.
 - **Deploys on 2026-11-26 outside the D-08 window, for privacy:** `adcf33b` ([#3762](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3762), the standing approval for withdrawal deletion ships with the release). It also carries `7214711` (#3760).
+- **Deployed 2026-11-26:** `adcf33b` by 22:59Z and `2d9de22` ([#3763](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3763)) by 23:26Z; each `commit_proven`, no blockers.
+- **First run on the host, 23:33Z to 23:43Z (`g-20261126T233326415149Z-9164810d`):** `incomplete`, `control_plane_backup_time_bound_reached`, after 34,010 files and 3.33 GB of records in 4.5 CPU minutes. The state is far larger than the design assumed, and the stream was packed at gzip level 9.
+  - Proven by that run: the artifact store's key writes, lists and deletes object versions under `control-plane-state/generations/`. Its uploaded parts were deleted and the ledger reads `deleted`.
+  - `latest.json` was private to root, so `door cat` refused it and the per-root sizes could not be read.
+  - The timer was stopped through the door (`20261126T234614Z-unit-56528866`) until the fix is live; a door hold on it is refused (`hold_unit_profile_refused`).
+- **Fix:** gzip level 1 (about five times the records per CPU second), the run's reports readable like the ledger, the timer hourly instead of every 15 minutes, and the stale page at three hours. Each run reads and uploads all of the state, so the cadence is what CPU, outbound transfer and the bucket pay for. The full size is not known until a run completes.
 
 ## Metering and retry rollout on 2026-11-20
 

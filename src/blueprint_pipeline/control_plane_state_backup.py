@@ -13,8 +13,8 @@ bucket the host already writes job artifacts to, and nothing else:
   bytes (class (b): caches, scratch, releases) are skipped. Roots marked ``records_only`` keep only
   ``.json``/``.jsonl`` records up to ``RECORD_MAX_FILE_BYTES``; every other root keeps regular files up to
   ``MAX_FILE_BYTES``. What a bound excluded is counted per root in the report.
-- **How.** One run every 15 minutes (``blueprint-control-plane-state-backup.timer``) packs the files into
-  one gzip tar stream, cut into parts of ``PART_BYTES``, each sealed with AES-GCM under a key made for
+- **How.** One run an hour (``blueprint-control-plane-state-backup.timer``) packs the files into
+  one gzip tar stream (``GZIP_LEVEL``), cut into parts of ``PART_BYTES``, each sealed with AES-GCM under a key made for
   that generation alone. That key is itself sealed to the owner's public key (``RELEASE_RECIPIENT_PATH``,
   a committed file every release carries; owner decision 2026-11-26) and travels in the seal as its
   ``key_envelope``. So the host holds no secret for a backup and nobody installs one: it can write a
@@ -43,6 +43,7 @@ import base64
 import binascii
 import fnmatch
 import grp
+import gzip
 import hashlib
 import io
 import json
@@ -82,6 +83,12 @@ RECORD_SUFFIXES = (".json", ".jsonl")
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_MAX_SECONDS = 10 * 60
 PART_BYTES = 8 * 1024 * 1024
+#: The fastest gzip level. The first run on the host (2026-11-26) packed 3.3 GB of records at tarfile's
+#: default, level 9, used 4.5 CPU minutes on them and stopped at its 10-minute bound with more to read.
+#: On JSON records level 1 packs about five times as much per CPU second for about a tenth more bytes.
+#: The stream is packed by ``gzip.GzipFile`` around a plain tar stream: ``tarfile`` takes a level for its
+#: own ``w|gz`` stream only from Python 3.12, and 3.11 is supported.
+GZIP_LEVEL = 1
 MAX_LIST_PAGES = 10_000
 _PART_MAGIC = b"BPB1"
 RESTORE_ACK = "restore-control-plane-state"
@@ -628,6 +635,14 @@ def _write_ledger(path: Path, generations: Sequence[Mapping[str, Any]]) -> None:
     os.chmod(path, 0o644)  # the withdrawal unit, as the service account, reads it
 
 
+def _write_report(path: Path, payload: Mapping[str, Any]) -> None:
+    """A run's report, readable like the ledger: ``door cat`` is how an operator reads what a run did, and
+    ``write_json`` leaves a new file private to root. It holds counts and root names, no file content."""
+
+    write_json(path, payload)
+    os.chmod(path, 0o644)
+
+
 def _mark(generations: list[dict[str, Any]], ids: Sequence[str], status: str, now: float) -> None:
     for row in generations:
         if row["id"] in ids:
@@ -637,7 +652,8 @@ def _mark(generations: list[dict[str, Any]], ids: Sequence[str], status: str, no
 STALE_CODE = "control_plane_backup_stale"
 # No ledger: no backup ever ran on this host. A warning (not a page) on every capacity tick until one does.
 NOT_CONFIGURED_CODE = "control_plane_backup_not_configured"
-STALE_AFTER_SECONDS = 2 * 3600
+# Hourly runs: one missed run is not a page, two are.
+STALE_AFTER_SECONDS = 3 * 3600
 
 
 def backup_freshness(ledger: Path, *, now: float) -> dict[str, Any]:
@@ -911,21 +927,23 @@ def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site
         except ListingIncomplete as error:
             report: dict[str, Any] = {"schema_version": REPORT_SCHEMA, "status": "incomplete", "reason": str(error),
                       "started_at_iso": _iso(started)}
-            write_json(report_root / "latest.json", report)
+            _write_report(report_root / "latest.json", report)
             return report
     gen = generation_id(started)
     row: dict[str, Any] = {"id": gen, "started_at_epoch": started, "status": "uploading"}
     generations.append(row)
     _write_ledger(ledger, generations)  # recorded before the first byte leaves the host
     # The enabled-unit list rides inside the generation, beside this report root.
-    write_json(report_root / "enabled_units.json", {"units": _enabled_units(fs_root), "observed_at_iso": _iso(started)})
+    _write_report(report_root / "enabled_units.json",
+                  {"units": _enabled_units(fs_root), "observed_at_iso": _iso(started)})
     deadline = clock() + max_seconds
     writer = _PartWriter(store, key, gen, part_bytes=part_bytes, max_bytes=max_bytes, deadline=deadline, clock=clock)
     stats: dict[str, Any] = {}
     files: list[dict[str, Any]] = []
     status, reason = "complete", None
     try:
-        with tarfile.open(fileobj=writer, mode="w|gz") as archive:
+        with gzip.GzipFile(fileobj=writer, mode="wb", compresslevel=GZIP_LEVEL, mtime=0) as packed, \
+                tarfile.open(fileobj=packed, mode="w|") as archive:
             for root in allowlist:
                 for entry in _walk(root, fs_root, stats):
                     archive.addfile(_tarinfo(entry), io.BytesIO(entry.data) if entry.kind == "file" else None)
@@ -981,7 +999,7 @@ def run_backup(*, fs_root: Path, store: Any, key: bytes, report_root: Path, site
         "bounds": {"max_bytes": max_bytes, "max_seconds": max_seconds, "max_file_bytes": MAX_FILE_BYTES,
                    "record_max_file_bytes": RECORD_MAX_FILE_BYTES},
     }
-    write_json(report_root / "latest.json", report)
+    _write_report(report_root / "latest.json", report)
     return report
 
 

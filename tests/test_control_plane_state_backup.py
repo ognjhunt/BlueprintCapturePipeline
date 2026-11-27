@@ -130,6 +130,25 @@ def test_a_restore_into_a_temporary_root_reproduces_the_backed_up_tree_byte_for_
     assert not (again / SITE / "captures").exists()
 
 
+def test_a_runs_reports_are_readable_like_the_ledger_and_the_stream_is_packed_fast(host, tmp_path):
+    store = FakeStore()
+    report = _run(host, store, tmp_path)
+    assert report["status"] == "complete"
+    # The first run on the host packed at tarfile's default, level 9, and ran out of its time bound. The
+    # gzip header says how the stream was packed: its extra-flags byte is 4 for the fastest level, 2 for 9.
+    first = backup._open(KEY, store.get(f"{backup.KEY_PREFIX}{report['generation']}/part-000000.bin"),
+                         f"{report['generation']}:part:0")
+    assert first[:2] == b"\x1f\x8b" and first[8] == 4 and backup.GZIP_LEVEL == 1
+    # An operator reads a run through the door, which is not root: the reports are readable, as the ledger is.
+    for name in ("latest.json", "enabled_units.json", "ledger.json"):
+        assert (tmp_path / "report" / name).stat().st_mode & 0o777 == 0o644, name
+    # The stream restores byte for byte.
+    drill = tmp_path / "drill"
+    backup.restore(store=store, key=KEY, fs_root=drill)
+    for relative, data in STATE.items():
+        assert (drill / relative).read_bytes() == data, relative
+
+
 def test_site_data_is_never_in_a_backup_even_when_present_on_disk(host, tmp_path):
     store = FakeStore()
     report = _run(host, store, tmp_path)
@@ -488,11 +507,15 @@ def test_a_backup_that_stopped_pages_and_a_host_never_set_up_warns(tmp_path, mon
     assert capacity._severity(backup.NOT_CONFIGURED_CODE) == "warn"
     report.mkdir()
     ledger = backup.ledger_path(report)
-    backup._write_ledger(ledger, [{"id": "g-a", "started_at_epoch": now - 3 * 3600, "status": "sealed"},
+    # Hourly runs: one missed run (two hours since the last complete one) is not a page; four hours is.
+    backup._write_ledger(ledger, [{"id": "g-a", "started_at_epoch": now - 2 * 3600, "status": "sealed"},
+                                  {"id": "g-b", "started_at_epoch": now - 600, "status": "incomplete"}])
+    assert stall._check_state_backup(now=now)[1] == []
+    backup._write_ledger(ledger, [{"id": "g-a", "started_at_epoch": now - 4 * 3600, "status": "sealed"},
                                   {"id": "g-b", "started_at_epoch": now - 600, "status": "incomplete"}])
     section, alerts = stall._check_state_backup(now=now)
     assert section["status"] == "stale" and [row["code"] for row in alerts] == [backup.STALE_CODE]
-    assert backup.STALE_CODE in stall.PAGE_CODES and "3.0h" in stall.describe(alerts[0])
+    assert backup.STALE_CODE in stall.PAGE_CODES and "4.0h" in stall.describe(alerts[0])
     backup._write_ledger(ledger, [{"id": "g-c", "started_at_epoch": now - 900, "status": "sealed"}])
     assert stall._check_state_backup(now=now)[1] == []
     ledger.write_text("{broken")
