@@ -238,10 +238,6 @@ def _renewed() -> bytes:
 # --- what the review found ------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "REVIEW FINDING, commit 4b2652b: the rule reads the site's earliest record from the ledger a later delivery "
-    "wrote, once retention has moved the first life's retirement receipt aside; the run that holds the first "
-    "life's footage is cleared and the withdrawal applies without it. Remove this marker with the fix."))
 def test_a_site_born_again_after_its_workspace_was_retired_does_not_clear_the_run_of_its_first_life(tmp_path):
     world = _first_life_then_retired(tmp_path)
     launches, scenes = world["launches"], world["capture"].parents[2]
@@ -285,10 +281,49 @@ def test_a_site_born_again_after_its_workspace_was_retired_does_not_clear_the_ru
     assert world["first"] < world["offloaded"]["pointer"]["offloaded_at_epoch"]
     assert cleared == [], (cleared, record)
     assert undetermined == [SITE_RUN]
+    # It stays undetermined because the rule sees the retirement, not by chance of the times.
+    assert (record["epoch"], record["unavailable_reason"]) == (None, "site_workspace_retired"), record
+    assert not journal.exists()
     with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
         deletion.apply_withdrawal_deletion(capture_root=again, expected_plan_digest=plan["digest"],
                                            authorize_complete_deletion=True, **_resolution(launches, tmp_path))
     assert again.is_dir()
+
+
+def _born_again_and_receipt_moved_aside(tmp_path: Path) -> dict:
+    world = _first_life_then_retired(tmp_path)
+    again = _deliver(tmp_path, world["cloud"], _renewed(), ended=False, video=b"the site's second walkthrough video")
+    plan = retention.plan_scene_workspace_retirement(
+        context=world["context"], bucket=BUCKET, scene_id=SCENE, now=time.time() + 72 * HOUR,
+        cloud=world["cloud"], process_checker=lambda _path: False)
+    result = retention.apply_scene_workspace_retirement(
+        plan, context=world["context"], ack=retention.RETIRE_ACK, cloud=world["cloud"], now=plan["observed_at_epoch"],
+        stream_publisher=lambda **_: pytest.fail("nothing is archived on this path"),
+        process_checker=lambda _path: False)
+    assert result["reason"] == "receipt_workspace_mismatch", result
+    _withdraw(again)
+    return {**world, "again": again, "moved_aside": Path(result["quarantined_receipt"])}
+
+
+@pytest.mark.parametrize("left", ["receipt_moved_aside_only", "ledger_row_only", "receipt_temporary_only"])
+def test_each_trace_of_the_retirement_alone_keeps_the_run_of_the_first_life_undetermined(tmp_path, left):
+    world = _born_again_and_receipt_moved_aside(tmp_path)
+    again, moved = world["again"], world["moved_aside"]
+    ledger_path = again / "pipeline_job_ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    if left != "ledger_row_only":
+        # Without the listener's row, only the file beside the workspace says the site was retired.
+        ledger["attempt_history"] = [row for row in ledger["attempt_history"]
+                                     if row.get("source") != "scene_retirement_receipt"]
+        ledger_path.write_text(json.dumps(ledger))
+    if left == "ledger_row_only":
+        moved.unlink()
+    elif left == "receipt_temporary_only":
+        moved.rename(moved.with_name(f".{SCENE}{retention.RETIRED_SUFFIX}.1234.0badc0de.tmp"))
+    plan = _plan(again, world["launches"], tmp_path)
+    record = plan["offloaded_runs_older_than_site"]["site_earliest_record"]
+    assert (record["epoch"], record["unavailable_reason"]) == (None, "site_workspace_retired"), record
+    assert _rows(plan) == ([], [SITE_RUN])
 
 
 def test_an_ended_capture_reopened_in_place_keeps_its_first_start(tmp_path):

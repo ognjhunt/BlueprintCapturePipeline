@@ -410,16 +410,23 @@ def _site_earliest_record(site: Path, identity: Mapping[str, str]) -> dict[str, 
     everything under it. More traces can only move it earlier. Nothing is known when a capture has no
     readable ledger of the listener's schema with a zoned ``started_at``, or when the scene workspace was
     retired (its ledger was removed with it, and one written by a later delivery would start late).
+    A retirement is seen by its receipt under its own name, by a receipt moved aside or a receipt temporary
+    (``.<scene>.retired.v1.json.*``: the retention code moves the receipt aside when a later delivery made
+    a new workspace, ``receipt_workspace_mismatch``, and a restore does the same), by a ``.retiring-``
+    leftover, or by an ``attempt_history`` row with source ``scene_retirement_receipt`` (the listener
+    writes it into a ledger it starts after a retirement that ended for lost authority).
     """
 
     def unavailable(reason: str) -> dict[str, Any]:
         return {"epoch": None, "ledger_epoch": None, "earliest_mtime_epoch": None, "unavailable_reason": reason}
 
     scenes, scene = site.parent, identity["scene_id"]
-    if os.path.lexists(scenes / f"{scene}.retired.v1.json") or any(scenes.glob(f".retiring-{scene}-*")):
+    if (os.path.lexists(scenes / f"{scene}.retired.v1.json") or any(scenes.glob(f".retiring-{scene}-*"))
+            or any(scenes.glob(f".{scene}.retired.v1.json.*"))):
         return unavailable("site_workspace_retired")
     filename, schema = _JOB_LEDGER
     ledger_times: list[float] = []
+    born_again = False
     try:
         captures = sorted((site / "captures").iterdir())
         for capture in captures:
@@ -429,6 +436,8 @@ def _site_earliest_record(site: Path, identity: Mapping[str, str]) -> dict[str, 
             _require(ledger.get("schema_version") == schema and started is not None, "record_unreadable")
             history = ledger.get("attempt_history") or []
             _require(isinstance(history, list), "record_unreadable")
+            born_again = born_again or any(isinstance(row, dict) and row.get("source") == "scene_retirement_receipt"
+                                           for row in history)
             ledger_times.append(started)
             ledger_times.extend(at for row in history if isinstance(row, dict)
                                 for at in map(_zoned_epoch, (row.get("started_at"), row.get("reopened_at")))
@@ -436,6 +445,9 @@ def _site_earliest_record(site: Path, identity: Mapping[str, str]) -> dict[str, 
         _require(ledger_times, "record_unreadable")
     except (WithdrawalDeletionError, OSError):
         return unavailable("site_job_ledger_unreadable")
+    if born_again:
+        # The ledger was started after the workspace was retired: the site's first life began earlier.
+        return unavailable("site_workspace_retired")
 
     def unreadable(error: OSError) -> None:
         raise error
