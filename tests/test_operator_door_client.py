@@ -582,6 +582,34 @@ def test_a_github_read_never_carries_the_door_token(monkeypatch) -> None:
     assert seen[0].get_header("Authorization") is None
 
 
+def test_a_file_read_waits_longer_than_other_requests(monkeypatch, tmp_path: Path) -> None:
+    """Stress test, 2026-11-27: a 128 MB package failed twice at the 120 s every request had; a file read waits longer."""
+    timeouts: list[tuple[str, float]] = []
+
+    class Response(io.BytesIO):
+        headers = {"X-Door-Eof": "true"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def opened(request, timeout):
+        timeouts.append((request.full_url, timeout))
+        return Response(b"bytes")
+
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", "secret-door-token")
+    monkeypatch.setattr(client.urllib.request, "urlopen", opened)
+    client._pull_file("/var/lib/blueprint/x/simulation.zip", tmp_path / "simulation.zip")
+    assert (tmp_path / "simulation.zip").read_bytes() == b"bytes"
+    assert [timeout for url, timeout in timeouts if "/fs/read" in url] == [client.FILE_READ_TIMEOUT_SECONDS]
+    assert client.FILE_READ_TIMEOUT_SECONDS >= 600 > client.REQUEST_TIMEOUT_SECONDS
+    with client._request("GET", "/status"):
+        pass
+    assert timeouts[-1][1] == client.REQUEST_TIMEOUT_SECONDS
+
+
 def test_github_failure_is_a_network_error_not_a_crash(monkeypatch) -> None:
     def down(_request, timeout):
         raise OSError("down")
