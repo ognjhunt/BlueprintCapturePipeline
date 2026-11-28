@@ -145,6 +145,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       # Release bytes only: every restored file still passes the same SHA-256
       # check as a fresh download, and a mismatch falls back to downloading.
@@ -597,6 +598,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Install frozen lint tools
         run: |
@@ -621,6 +623,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Install frozen type checker
         run: |
@@ -671,6 +674,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Install frozen SAST tools
         run: |
@@ -715,6 +719,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Enforce source and capability policy
         run: |
@@ -892,6 +897,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Verify lock and build distributions
         run: |
@@ -948,6 +954,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Audit frozen runtime dependencies
         run: |
@@ -977,6 +984,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Enforce systemd security baseline
         run: |
