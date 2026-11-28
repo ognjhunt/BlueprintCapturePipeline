@@ -116,6 +116,15 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+#: How long one request may wait for the door's answer.
+REQUEST_TIMEOUT_SECONDS = 120
+#: A file or folder read may wait longer: the door reads the whole file before it answers, and for a large package
+#: that took more than two minutes (stress test, 2026-11-27: a 128 MB company package failed twice at 120 s and came
+#: whole in 80 s once the client waited).
+FILE_READ_TIMEOUT_SECONDS = 900
+FILE_READ_ROUTES = frozenset({"/fs/read", "/fs/archive"})
+
+
 def _request(method: str, route: str, query: dict[str, Any] | None = None, body: Any = None,
              *, checked_error_max_bytes: int | None = None):
     url = base_url() + route
@@ -126,7 +135,8 @@ def _request(method: str, route: str, query: dict[str, Any] | None = None, body:
     if data is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        return urllib.request.urlopen(request, timeout=120)  # nosec B310 - operator-configured URL
+        timeout = FILE_READ_TIMEOUT_SECONDS if route in FILE_READ_ROUTES else REQUEST_TIMEOUT_SECONDS
+        return urllib.request.urlopen(request, timeout=timeout)  # nosec B310 - operator-configured URL
     except urllib.error.HTTPError as error:
         if checked_error_max_bytes is not None:
             code = ""
