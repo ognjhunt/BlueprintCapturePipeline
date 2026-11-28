@@ -1,7 +1,9 @@
 """Capture->site-package orchestration spine (formerly ``qualification.py``).
 
 A website upload branches from fresh task context directly into task-aware media
-and native scene preparation (``website_capture_preparation``). The capture app's
+and native scene preparation (``website_capture_preparation``). A job whose website
+asks for its simulation only on request waits, having bought nothing, until an
+approved company asks (``website_simulation_request``). The capture app's
 branch (object indexing, Gemini review, privacy post-processing, World Labs input
 preparation, canonical site-package assembly, provider preview, WebApp sync) was
 removed on 2026-11-11 with the app's processing path; a descriptor that is not a
@@ -247,6 +249,19 @@ def run_qualification_pipeline(
                 return preparation_source_video(
                     capture_root=capture_root,
                     raw_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root))
+            from .website_simulation_request import retain_awaiting_simulation_request, waits_for_request
+            if waits_for_request(capture_root):
+                # The simulation is built only once a company asks for it (owner decision, 2026-11-28): until
+                # then keep what is free and needed to share the job (the normalized video the company clip is
+                # made from, the task context, its evidence and the grant) and end the stage waiting. No Atlas
+                # job, clean plate, reservation or scene intent (``website_simulation_request``).
+                website_source_video()
+                descriptor = prepare_website_task_descriptor(
+                    descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
+                    load_task_context=load_current_website_task_context,
+                    load_sponsorship=load_website_scene_sponsorship)
+                return retain_awaiting_simulation_request(capture_root=capture_root, pipeline_dir=pipeline_dir,
+                                                          task_context=descriptor.metadata["site_task_context"])
             # A routed upload's Atlas preview is a side lane: recording it never raises or holds this run.
             enqueue_preview(descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
                             source_video=website_source_video)

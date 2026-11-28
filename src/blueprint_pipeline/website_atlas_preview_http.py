@@ -6,6 +6,8 @@ web-sized scene preview a site opens from its job page (``website_scene_preview`
 is read the same way, and so is the silent clip an approved deployment company
 watches (``website_company_clip``), which also answers one byte range, and so is the
 simulation package an approved company downloads (``website_company_simulation``).
+The WebApp's push of a company's request for a job's simulation lands here too
+(``website_simulation_request``), signed and WebApp-only like the clip recheck.
 """
 import logging
 import os
@@ -134,6 +136,35 @@ def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Ca
             raise HTTPException(status_code=404, detail="website_company_clip_unavailable")
         return JSONResponse({"schema_version": RECHECK_SCHEMA, "accepted": True}, status_code=202,
                             headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/live-pipeline/website-simulation-requests/{capture_id}",
+              dependencies=[Depends(require_admission)])
+    async def request_simulation(request: Request, capture_id: str):
+        """An approved company asked for this job's simulation: keep the request once
+        (``website_simulation_request``); the held-handoff replay starts the build on its next pass."""
+        import json
+
+        from fastapi.responses import JSONResponse
+
+        from .website_simulation_request import (
+            ALREADY_RECORDED, CAPTURE_UNKNOWN, CAPTURE_WITHDRAWN, RECORDED, record_request,
+        )
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") != "blueprint-webapp"):
+            raise HTTPException(status_code=403, detail="website simulation request issuer not authorized")
+        raw = await request.body()
+        try:
+            body = json.loads(raw) if len(raw) <= 4096 else None
+        except ValueError:
+            body = None
+        outcome = await run_in_threadpool(record_request, capture_id=capture_id, body=body,
+                                          storage_root=_storage_root())
+        headers = {"Cache-Control": "private, no-store"}
+        if outcome in (RECORDED, ALREADY_RECORDED):
+            return JSONResponse({"status": outcome}, status_code=202, headers=headers)
+        if outcome in (CAPTURE_UNKNOWN, CAPTURE_WITHDRAWN):
+            return JSONResponse({"detail": outcome}, status_code=404, headers=headers)
+        return JSONResponse({"detail": "website_simulation_request_invalid"}, status_code=400, headers=headers)
 
     @app.get("/api/live-pipeline/website-company-simulations/{capture_id}/simulation.zip",
              dependencies=[Depends(require_admission)])

@@ -35,6 +35,18 @@ python3 scripts/operator_door.py test-job --idempotency-key 20261201:library-ais
 The door answers with the job id, its capture id and the label. The same key always gives the same job; the same
 key with another label, footage or description is refused.
 
+**The simulation.** Since 2026-11-28 a site's job builds its simulation only once an approved deployment company
+asks for it (`website_simulation_request`). A test job asks for its own by default: the website records an
+`internal_test` request when it makes the job and pushes it to the Pipeline, so the full path runs as before.
+To test the wait itself, add `--simulation on_request`: the job prepares its sound-free clip and nothing else,
+its preparation completes waiting (status `awaiting_inputs`, reason `awaiting_simulation_request`) and costs $0
+on the host, and its slot is free while it waits. Ask for its simulation as a company would: the internal test
+company's "Ask for a simulation" on the website's job page, which sends the same signed request a company's press
+does. The job then takes a slot again until it ends. A waiting test job's workspace is kept while its grant is live
+(at most seven days from upload), then retired like any finished test job. The option is sent only when given, so a
+door installed before it still takes every other test job; the option itself needs the installed door upgraded
+(`install.sh --upgrade`, `docs/OPERATOR_DOOR.md`), and the website must know the field.
+
 ## Run a batch
 
 Write a matrix file:
@@ -141,7 +153,7 @@ then the door refuses it as `kind_unknown`.
 
 ## What it costs
 
-Up to about $20 a job. The one complete run so far (2026-11-16, a rigid job) settled $6.04 at World Labs and
+Up to about $20 a job once its simulation is asked for; $0 on the host while it waits (`--simulation on_request`). The one complete run so far (2026-11-16, a rigid job) settled $6.04 at World Labs and
 about $2 of object authoring. Every website job's scene, a door or drawer job's too, is built on the host with no
 rented GPU (stage 5 records that no simulator ran, `website_native_background.select_stage_five`). The account
 limit counts test jobs like any other job. It is $400 for November 2026 and $300 again from December.

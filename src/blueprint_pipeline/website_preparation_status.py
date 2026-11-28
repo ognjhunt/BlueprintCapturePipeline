@@ -10,6 +10,10 @@ reason) and that an attempt only waits for control-plane capacity
 (capacity_delayed) rather than for anything the site provides. Every other
 caller, including a WebApp that predates v2, keeps the exact v1 receipt.
 
+A job that waits for a company to ask for its simulation (``website_simulation_request``)
+reads ``awaiting_inputs``; v7 and later name it by the outcome reason
+``awaiting_simulation_request`` while the WebApp lists the new reasons.
+
 A preparation-only task stays unconfirmed, so its read also asks the WebApp
 where the grant stands. A grant that expired still names the context it was
 issued for, so the ledger is reported as for a current one. A preparation with
@@ -314,6 +318,7 @@ def _retained_handoff(root: Path, handoff: Mapping[str, Any], context: Any) -> t
     from .website_target_background_correction import retains_rejected_selection
     from .observed_room_contracts import retains_observed_room_limit
     from .website_recapture_required import retains_recapture_required
+    from .website_simulation_request import retains_awaiting_simulation_request
     from .website_task_context_lineage import binding_contexts
     native_profile_held = family_prepared = room_package = False
     # A handoff decided before the brief was confirmed stays bound to the retained context's verified
@@ -324,7 +329,9 @@ def _retained_handoff(root: Path, handoff: Mapping[str, Any], context: Any) -> t
                                or retains_observed_room_limit(handoff, held_context)
                                or retains_geometry_only_fit(handoff, held_context)
                                or retains_robot_fit_hold(handoff, held_context)
-                               or retains_recapture_required(handoff, held_context))
+                               or retains_recapture_required(handoff, held_context)
+                               # Waiting for a company to ask for the simulation (it builds nothing until then).
+                               or retains_awaiting_simulation_request(handoff, held_context))
         family_prepared = retains_task_family_preparation(handoff, held_context)
         # A job handed to the company package as the room package (or, retained, a navigation job
         # handed to the G1 screening lane) reads as handed off; it claims no result.
@@ -498,6 +505,11 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                 if spent is not None and outcome is None:
                     # Its timed retries are spent: said plainly, with the next run on the next release.
                     outcome = spent
+                from .website_simulation_request import waiting_outcome
+                requested = waiting_outcome(root, ledger=before) if state == "awaiting_inputs" else None
+                if requested is not None and outcome is None:
+                    # Waiting for a company to ask for the simulation: not a failure and not the site's to answer.
+                    outcome = requested
         if schema_version in _FROM_V4 and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question

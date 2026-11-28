@@ -19,6 +19,10 @@ re-run them:
   A job whose re-derived scene half's intake the website refused as a changed request
   (``idempotency_conflict``, before the Pipeline could re-issue it) lacks ``pipeline:navigation_intake_reissue``
   (``_reissue_refused``); its next replay sends the intake re-issued.
+- **A company asks for the job's simulation.** Since 2026-11-28 a job whose website builds the simulation
+  only on request ends its preparation waiting, having bought nothing (``website_simulation_request``).
+  Once the website's request is recorded beside the capture, the job runs again, once per request digest,
+  and builds as any job did before; it is never reopened by the rules (``website_rules_reopen``).
 
 Modelled on the robot fit recheck (``website_robot_fit_hold``): the job ledger keeps the run's exact
 handoff bytes while it holds this way (``replay_record``); the existing drain tick replays them once per
@@ -244,17 +248,22 @@ def _grant_live(pipeline_root: Path) -> bool:
 
 
 def held_kind(pipeline_root: Path) -> str | None:
-    """How the retained handoff waits on a later fact: ``consent``, ``intake_receipt``, ``integration_gap``,
-    ``registration_recapture`` or None.
+    """How the retained handoff waits on a later fact: ``simulation_request``, ``consent``, ``intake_receipt``,
+    ``integration_gap``, ``registration_recapture`` or None.
 
     ``integration_gap``: the hold names a missing Blueprint piece (``pipeline:*``), which a new release
-    can build, so the job is re-evaluated once per release.
+    can build, so the job is re-evaluated once per release. ``simulation_request``: the job waits for a
+    company to ask for its simulation (``website_simulation_request``).
     """
     from .website_task_context_contracts import holds_native_task_preparation
     from .website_task_context_lineage import binding_contexts
 
     root = Path(pipeline_root)
     handoff, context = _handoff(root), _retained_context(root)
+    from .website_simulation_request import HOLD_KIND, retains_awaiting_simulation_request
+    if handoff is not None and context is not None and any(
+            retains_awaiting_simulation_request(handoff, bound) for bound in binding_contexts(root, context)):
+        return HOLD_KIND
     if registration_recapture_code(root, handoff, context) is not None:
         return "registration_recapture"
     # A hold decided before the brief was confirmed stays bound to the retained context's verified parent
@@ -282,11 +291,17 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
     ``release``: the running release (``current_release_commit``) with the pipeline pieces the hold names,
     for a hold on a Blueprint integration gap; each release re-evaluates it once. ``rules_reopen``: a hold the
     current rules no longer stop on (``website_rules_reopen``), once per rules revision and held handoff.
+    ``simulation_requested``: a company asked for the job's simulation, keyed by the request's digest; a job
+    that waits for one is never reopened by the rules.
     """
     root = Path(pipeline_root)
     kind = held_kind(root)
     fact = None
-    if kind == "consent":
+    if kind == "simulation_request":
+        from .website_simulation_request import arrived_fact as requested
+
+        fact = requested(root.parent)
+    elif kind == "consent":
         from .website_task_context_lineage import confirmation_successor
 
         retained = _retained_context(root) or {}
@@ -317,7 +332,7 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
         release, missing = current_release_commit(), _pipeline_missing(_handoff(root) or {})
         if release and missing:
             fact = {"kind": "release", "release_commit": release, "missing_pipeline": missing}
-    if fact is None and kind != "consent":
+    if fact is None and kind not in {"consent", "simulation_request"}:
         # A hold the current rules no longer stop on (``website_rules_reopen``), once per rules revision.
         from .website_rules_reopen import rules_reopen
 

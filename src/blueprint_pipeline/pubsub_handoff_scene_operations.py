@@ -418,9 +418,14 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             failure_record[RECONSTRUCTION_FIELD] = reconstruction
         # Any other retryable failure is run again by the host's own tick, with growing gaps.
         from .website_preparation_retry import FIELD as RETRY_FIELD, failure_retry
+        # A replay a company's request for the simulation started runs the job's build itself, which nothing
+        # else would run again: its failure retries like any preparation's (``website_simulation_request``).
+        from .website_simulation_request import FACT_KIND as SIMULATION_REQUESTED
+        requested = ((expected_held_replay or {}).get('fact') or {}).get('kind') == SIMULATION_REQUESTED
         retry = failure_retry(exc=exc, capture_root=capture_root, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, history=[*previous_history, failure_record],
-            failed_at=failed_at, owned_elsewhere=bool(resume_record or reconstruction or correction or kept_recheck))
+            failed_at=failed_at, owned_elsewhere=bool(resume_record or reconstruction or correction
+                                                      or (kept_recheck and not requested)))
         # Keep the exact bytes while a guessed object can still be corrected.
         replay = replay_record(_listener, payload=payload, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, capture_root=capture_root)

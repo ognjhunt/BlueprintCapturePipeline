@@ -226,6 +226,10 @@ def run(request: Mapping[str, Any], *, door_request_id: str, ledger_root: Path =
     from .common import write_json
 
     body = {key: request[key] for key in ("idempotency_key", "label", "footage_id", "description")}
+    if request.get("simulation") in ("now", "on_request"):
+        # Passed to the website as chosen (``on_request``: the job waits for its simulation to be asked for;
+        # absent or ``now``: the website asks for it when it makes the job, so the full path runs).
+        body["simulation"] = request["simulation"]
     path = _row_path(ledger_root, body["idempotency_key"])
     ledger_root.mkdir(parents=True, exist_ok=True)
     with open(ledger_root / ".lock", "a", encoding="utf-8") as lock:

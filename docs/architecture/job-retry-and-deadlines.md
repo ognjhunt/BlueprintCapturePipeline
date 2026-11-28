@@ -335,3 +335,28 @@ life (`MAXIMUM_JOB_SECONDS`, which ends it `atlas_preview_expired`): a grant iss
 renewed or extended can end after it. An attempt that has sent anything is always resumed from its
 receipts; a new one is recorded only once every earlier operation is proven failed. A privacy or
 rights refusal stays a stop.
+
+## 10. A job that waits for its simulation to be asked for (2026-11-28)
+
+Owner decision, 2026-11-28: the simulation of the site is built only when an approved deployment company
+asks for it on that job. A job whose task context carries `simulation_on_request: true` and has no request
+yet ends its preparation stage as a **completed stage that waits** (`website_simulation_request`, handoff
+status `awaiting_simulation_request`). It has normalized the video, kept the task context, its evidence and
+the grant, and bought nothing: no Atlas job is created, so its seven days have not started.
+
+- Nothing retries it, pages on it or ends it on the Pipeline. The ledger is `completed`, so the host's retry
+  (`website_preparation_retry`), the overdue observation and both silence endings (section 4) leave it alone;
+  the preparation fault page reads only stopped ledgers; there is no Atlas job for the Atlas stall check.
+  The status reads `awaiting_inputs`, and, to a WebApp that lists the new reasons, the outcome reason
+  `awaiting_simulation_request`. The wait needs no rule here: it is not a failure.
+- The request is its fact. The WebApp's signed push writes `pipeline/simulation_request/request.json` once,
+  and the listener's held-handoff drain runs the stage again for it, once per request digest
+  (`website_held_handoff_replay`, kind `simulation_request`). The run is today's path, under every admission
+  and the job's cap. A failure of that run is retried by this policy like any preparation's
+  (`failure_retry`; a replay of the other held kinds stays the drain's own, as before).
+- The window is the grant's, as in section 4. The grant was issued at upload, so a request that comes late
+  meets `consent_expired` at the replay's grant read, which ends the job. The WebApp therefore issues a fresh
+  or extended grant when it records a request whose job's grant has ended or ends within the build's window,
+  before it pushes the request; and its window and no-grant sweeps leave a waiting job alone.
+- The workspace stays while a company can ask: a site's job while it is listed for companies, an internal
+  test job while its grant is live (`website_scene_workspace_retention.waiting_for_simulation_request`).

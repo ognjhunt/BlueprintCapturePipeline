@@ -557,7 +557,12 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if kind == "test-job":
         # The website route's own patterns (Blueprint-WebApp server/routes/internal-test-jobs.ts).
         required = {"kind", "idempotency_key", "label", "footage_id", "description"}
-        if (set(body) != required or not all(isinstance(body[key], str) for key in required - {"kind"})
+        # Optional since 2026-11-28: ``on_request`` makes a test job that waits for its simulation to be asked
+        # for, as a site's job does; absent or ``now``, the website asks for it when it makes the job.
+        if body.get("simulation", "now") not in ("now", "on_request"):
+            raise RequestRefused("test_job_fields_invalid")
+        if (set(body) - {"simulation"} != required
+                or not all(isinstance(body[key], str) for key in required - {"kind"})
                 or not _TEST_JOB_KEY.fullmatch(body["idempotency_key"]) or not _TEST_JOB_LABEL.fullmatch(body["label"])
                 or not _TEST_JOB_FOOTAGE.fullmatch(body["footage_id"])
                 or not 1 <= len(body["description"].strip()) <= 2000):

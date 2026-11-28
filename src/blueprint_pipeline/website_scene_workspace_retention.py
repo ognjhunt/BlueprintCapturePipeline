@@ -852,6 +852,37 @@ def internal_test_job(capture_root: Path) -> bool:
     return True
 
 
+#: A capture whose preparation waits for a company to ask for its simulation (``website_simulation_request``).
+AWAITING_SIMULATION_REQUEST_REASON = "awaiting_simulation_request"
+
+
+def waiting_for_simulation_request(capture_root: Path, *, test_job: bool, now: float) -> bool:
+    """Keep a capture that waits for a request for its simulation: the request can start the build only while
+    its folder exists (the replay reads the kept handoff and its bytes there).
+
+    A site's job is kept while it is listed for companies (``shared_with_companies``): only a company that sees
+    it can ask. Blueprint's own internal test job is kept while its scene grant is live (at most seven days from
+    upload), the window an operator has to ask; after it the test job retires as any finished one does. Kept
+    regardless of ``keep_shared_workspaces``, so an operator's own retirement plan never removes one either.
+    """
+
+    from .website_simulation_request import awaiting
+
+    root = Path(capture_root)
+    if not awaiting(root):
+        return False
+    if not test_job:
+        return shared_with_companies(root)
+    state, grant, _ = _load_json(root / "pipeline" / "website_scene_sponsorship.json")
+    if state == "absent":
+        return False
+    if state != "ok" or grant is None:
+        return True  # nothing is retired on doubt
+    ends = [value for value in (grant.get("expires_at_epoch"), grant.get("valid_until"))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    return bool(ends) and max(ends) > now
+
+
 def _is_website_capture(capture_root: Path) -> bool:
     """The lane the listener gave this capture: ``is_website_capture_manifest`` on its raw manifest."""
 
@@ -940,6 +971,8 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
         if (context.keep_shared_workspaces and not test_job
                 and shared_with_companies(scene / "captures" / capture_id)):
             reasons.append(f"shared_with_companies:{capture_id}")
+        if waiting_for_simulation_request(scene / "captures" / capture_id, test_job=test_job, now=now):
+            reasons.append(f"{AWAITING_SIMULATION_REQUEST_REASON}:{capture_id}")
     idle_seconds = now - walk.newest_mtime
     if idle_seconds < context.minimum_idle_seconds:
         reasons.append("recently_active")

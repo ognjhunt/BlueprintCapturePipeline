@@ -892,6 +892,9 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     test_job = commands.add_parser("test-job", help="start one internal test job from the website's test footage")
     for flag in ("--idempotency-key", "--label", "--footage-id", "--description"):
         test_job.add_argument(flag, required=True)
+    test_job.add_argument("--simulation", choices=("now", "on_request"),
+                          help="on_request: the job waits for its simulation to be asked for, as a site's job "
+                               "does (default: the website asks for it when it makes the job)")
     _add_wait(test_job, 600)
     company = commands.add_parser("test-company", help="act for Blueprint's internal test company on a test job")
     company.add_argument("action", choices=("ensure", "send", "site-link", "answer", "accept", "page", "outcome-questions"))
@@ -1012,6 +1015,8 @@ def run(args: argparse.Namespace) -> int:
     elif command == "test-job":
         body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
                 "footage_id": args.footage_id, "description": args.description}
+        if args.simulation:  # sent only when chosen, so a door installed before the option takes the request
+            body["simulation"] = args.simulation
         return _submit(body, args)
     elif command == "test-company":
         body: dict[str, Any] = {"kind": "test-company", "action": args.action}
