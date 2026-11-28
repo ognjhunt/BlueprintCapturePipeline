@@ -441,3 +441,70 @@ def test_repair_edit_binding_adds_to_the_rules_and_leaves_normal_edits_unchanged
     assert repaired["prompt"].startswith(normal["prompt"]) and '"Keep the mat"' in repaired["prompt"]
     assert repaired["reference_policy"] == "fixed_repair_reference"
     assert repaired["repair_reference_digest"] == "sha256:r"
+
+
+def _provider_error(status, *, code, message):
+    """The OpenAI SDK's own error for one HTTP answer, as its client raises it."""
+    import httpx
+    import openai
+    kind = {402: openai.APIStatusError, 429: openai.RateLimitError, 500: openai.InternalServerError}[status]
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+    return kind(f"Error code: {status}", response=response,
+                body={"message": message, "type": code, "param": None, "code": code})
+
+
+class _RefusedAfterReservation(_AuditedInvoker):
+    """The provider answers the first ``refusals`` calls with ``error`` after the harness reserved them."""
+
+    def __init__(self, output, error, refusals=1):
+        super().__init__(output)
+        self.error, self.refusals = error, refusals
+
+    def invoke(self, spec, input_value):
+        if not self.refusals:
+            return super().invoke(spec, input_value)
+        self.refusals -= 1
+        self.calls.append((spec, input_value))
+        reservation = {"schema_version": "task_evaluation_inference_reservation.v1", "run_id": spec.run_id,
+            "capability": repair.CAPABILITY, "model": spec.model,
+            "input_digest": canonical_digest({"input": input_value}), "max_turns": 1,
+            "max_output_tokens": spec.max_output_tokens, "projected_max_cost_usd": .5}
+        reservation["reservation_id"] = canonical_digest({k: reservation[k] for k in (
+            "run_id", "capability", "model", "input_digest", "max_turns", "max_output_tokens")})
+        reservation["inference_reservation_digest"] = canonical_digest(reservation, digest_field="inference_reservation_digest")
+        self.audit["record_reservation"](reservation)
+        raise self.error
+
+
+@pytest.mark.parametrize("error", [
+    _provider_error(429, code="insufficient_quota", message="You have no credits remaining."),
+    _provider_error(402, code=None, message="unpaid")], ids=["429_insufficient_quota", "402"])
+def test_a_repair_plan_the_provider_refuses_without_billing_settles_at_nothing_and_is_asked_again(
+        tmp_path, website, error):
+    from blueprint_pipeline.job_retry_policy import provider_error_waits
+    invoker = _RefusedAfterReservation({"repairs": [], "summary": "nothing fixable"}, error, refusals=2)
+    for _ in range(2):
+        with pytest.raises(Exception) as raised:
+            _run(tmp_path, invoker)
+        assert provider_error_waits(raised.value) and "requires_reconciliation" not in str(raised.value)
+    first, second = (row["binding_digest"] for row in website["reserve"])
+    assert first != second  # Each ask takes its own reservation; each refused one is settled at $0.
+    assert [(row["allocation_binding_digest"], row["provider_charge_amount_usd"]) for row in website["settle"]] == [
+        (first, 0), (second, 0)]
+    _run(tmp_path, invoker)
+    assert len(invoker.calls) == 3 and len(website["reserve"]) == 3
+    third = website["reserve"][2]["binding_digest"]
+    assert website["settle"][-1]["allocation_binding_digest"] == third not in (first, second)
+    assert website["settle"][-1]["provider_charge_amount_usd"] == 0.04
+    _run(tmp_path, invoker)  # A restart buys nothing again.
+    assert len(invoker.calls) == 3 and len(website["settle"]) == 3
+
+
+def test_a_repair_plan_failure_not_known_to_bill_nothing_keeps_its_hold(tmp_path, website):
+    error = _provider_error(429, code="rate_limit_exceeded", message="Rate limit reached")
+    invoker = _RefusedAfterReservation({"repairs": [], "summary": ""}, error)
+    with pytest.raises(type(error)):
+        _run(tmp_path, invoker)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        _run(tmp_path, invoker)
+    assert len(invoker.calls) == len(website["reserve"]) == 1 and website["settle"] == []

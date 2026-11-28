@@ -15,6 +15,7 @@ import fcntl
 import json
 import math
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -172,6 +173,48 @@ def _completed_plan_without_output(*, root, digest, binding, frames, originals, 
             "usage": completion["usage"], "cost_usd": cost, "model": completion["model"]}
 
 
+#: A plan call the provider refused in a way known to bill nothing (``job_retry_policy.provider_refusal_unbilled``):
+#: no credit left, unpaid, past a spend limit, or Blueprint's own key refused.
+REFUSED_UNBILLED = "refused_unbilled"
+
+
+def _refused_plans(root: Path, digest: str) -> list[Path]:
+    """This plan's retired unbilled refusals: ``plan-<digest>.refused-<n>.json``."""
+    stem = re.escape(f"plan-{digest[7:]}.refused-")
+    return [path for path in root.glob(f"plan-{digest[7:]}.refused-*.json")
+            if re.fullmatch(stem + r"\d+\.json", path.name)]
+
+
+def _retire_unbilled_refusal(*, path: Path, root: Path, digest: str, receipt: Mapping[str, Any],
+                             task_context: Mapping[str, Any]) -> None:
+    """Settle a refused plan call at $0, which releases its hold, and move it and its run aside.
+
+    The refusal is first recorded in place, so a stop at any step finishes here on the next run and never reads
+    as a call of unknown outcome. Moved aside, it no longer answers for the plan: the next run reserves under its
+    own allocation, through every admission again (as the room planner does).
+    """
+    from .website_task_context import website_webapp_request
+    settlement_path = root / f"plan-{digest[7:]}.settlement.json"
+    if not settlement_path.is_file():
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": receipt.get("allocation_binding_digest", digest),
+                   "provider": "openai", "completed_request_count": 1, "provider_charge_amount_usd": 0,
+                   "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
+        settlement = website_webapp_request(capture_id=task_context["capture_id"],
+            operation="preparation-settlement", payload={"request_id": task_context["request_id"],
+                "scene_id": task_context["scene_id"], "settlement": command})
+        if settlement.get("status") != "settled":
+            raise ValueError("website_image_repair_settlement_invalid")
+        write_json(settlement_path, settlement)
+    aside = root / f"plan-{digest[7:]}.refused-{len(_refused_plans(root, digest))}"
+    run_root = root / f"inference-{digest[7:]}"
+    if run_root.is_dir():
+        # Its reservation record would refuse the next call's reservation for the same run.
+        os.replace(run_root, aside.with_name(aside.name + ".inference"))
+    os.replace(settlement_path, aside.with_name(aside.name + ".settlement.json"))
+    os.replace(path, aside.with_name(aside.name + ".json"))
+
+
 def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
                        failed_review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
                        task_context: Mapping[str, Any], output_root: Path, invoker: Any = None,
@@ -206,11 +249,18 @@ def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mappin
                 raise ValueError("website_image_repair_in_progress") from exc
             if path.is_file():
                 receipt = json.loads(path.read_text())
+                if receipt.get("status") == REFUSED_UNBILLED and receipt.get("binding_digest") == digest:
+                    # A stop after the refusal was recorded: finish settling it at $0 and ask again.
+                    _retire_unbilled_refusal(path=path, root=root, digest=digest, receipt=receipt,
+                                             task_context=task_context)
+            if path.is_file():
                 if receipt.get("binding_digest") != digest or receipt.get("binding") != binding:
                     raise ValueError("website_image_repair_receipt_invalid")
                 if receipt.get("status") != "completed":
                     lost = _completed_plan_without_output(root=root, digest=digest, binding=binding,
                         frames=frames, originals=originals, failed_review=failed_review, targets=targets)
+                    if "allocation_binding_digest" in receipt:
+                        lost["allocation_binding_digest"] = receipt["allocation_binding_digest"]
                     # Keep the original intent and its actual charge. The new
                     # paid plan explicitly binds the verified completed call it
                     # replaces; unknown or in-flight calls still refuse above.
@@ -233,7 +283,8 @@ def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mappin
         if settlement_path.is_file():
             continue
         # Release the unused quote; the request count is never replenished.
-        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": settlement_digest,
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": completed.get("allocation_binding_digest", settlement_digest),
                    "provider": "openai", "completed_request_count": 1,
                    "provider_charge_amount_usd": round(min(float(completed["cost_usd"]), MAX_COST_USD), 6),
                    "usage_receipt_digest": canonical_digest({"usage": completed["usage"]})}
@@ -252,20 +303,29 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
               task_context: Mapping[str, Any], invoker: Any, reserve: Any) -> dict[str, Any]:
     input_value = _agent_input(frames=frames, originals=originals, review=failed_review, targets=targets)
     source = {"source_video_digest": binding["source_video_digest"]} if "source_video_digest" in binding else {}
+    # The WebApp grants one reservation per allocation: a call after a refused one takes its own.
+    refusals = len(_refused_plans(root, digest))
+    allocation = digest if not refusals else canonical_digest({"binding_digest": digest, "refused_attempt": refusals})
+    allocated = {} if allocation == digest else {"allocation_binding_digest": allocation}
     admission, _grant = reserve(
-        task_context=task_context, binding_digest=digest, maximum_cost_usd=MAX_COST_USD, request_count=1,
+        task_context=task_context, binding_digest=allocation, maximum_cost_usd=MAX_COST_USD, request_count=1,
         resource_class="openai_api_candidate", provider="openai", **source)
     with path.open("x") as stream:
         json.dump({"status": "submitting", "binding_digest": digest, "binding": binding,
-                   "admission": admission}, stream)
+                   "admission": admission, **allocated}, stream)
         stream.flush()
         os.fsync(stream.fileno())
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     selected_invoker = invoker if invoker is not None else _default_invoker()
     audit = InferenceReservationAudit(run_root=root / f"inference-{digest[7:]}", run_id=digest[7:23])
+    recorded = []
+
+    def record_completion(value):
+        audit.record_completion(value)
+        recorded.append(value)
     selected_invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
-        record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
+        record_completion=record_completion, restored_reserved_cost_usd=0.0)
     output_type = RepairPlan
     if binding["max_repairs"] != MAX_REPAIRS:
         # A provider transaction limit is not a scene-wide image ceiling.
@@ -276,8 +336,33 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
         name="Blueprint Website Image Repair Planner", instructions=binding["instructions"],
         model=MODEL, max_turns=1, max_output_tokens=MAX_OUTPUT_TOKENS, max_input_tokens=MAX_INPUT_TOKENS,
         output_type=output_type)
+    refused = None
     try:
         invocation = selected_invoker.invoke(spec, input_value)
+    except BaseException as exc:
+        audit.write_manifest()
+        from .job_retry_policy import provider_refusal_unbilled
+        if recorded or not isinstance(exc, Exception) or not provider_refusal_unbilled(exc):
+            # A 5xx, a plain rate limit, a timeout or a stop is not known to have billed nothing: its receipt
+            # stays submitting and holds its reservation for reconciliation.
+            raise
+        refused = exc
+    if refused is not None:
+        # The provider refused before any work (no credit, unpaid, a spend limit, a refused key): it bills nothing.
+        # Settled at $0, its hold released; the step waits as for an outage (``job_retry_policy.provider_error_waits``)
+        # and the job's next run asks again under a new reservation.
+        from .job_retry_policy import provider_error_status
+        status = provider_error_status(refused)
+        receipt = {"status": REFUSED_UNBILLED, "binding_digest": digest, "binding": binding, "admission": admission,
+                   **allocated, "error": {"type": type(refused).__name__, "http_status": status},
+                   "usage": {"cost_basis": "provider_refused_before_work", "cost_is_actual": True,
+                             "http_status": status}, "cost_usd": 0}
+        temporary = path.with_suffix(".tmp")
+        write_json(temporary, receipt)
+        os.replace(temporary, path)
+        _retire_unbilled_refusal(path=path, root=root, digest=digest, receipt=receipt, task_context=task_context)
+        raise refused
+    try:
         plan = output_type.model_validate(invocation.output).model_dump(mode="json")
         frame_ids = [frame["frame_id"] for frame in frames]
         requested = [row["frame_id"] for row in plan["repairs"]]
@@ -285,7 +370,7 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
             raise ValueError("website_image_repair_plan_frames_invalid")
         cost = float(invocation.cost_usd)
         receipt = {"status": "completed", "binding_digest": digest, "binding": binding, "admission": admission,
-                   "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
+                   **allocated, "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
                    "usage": invocation.usage, "cost_usd": cost, "basis": "model_repair_plan",
                    "approves_views": False}
         temporary = path.with_suffix(".tmp")

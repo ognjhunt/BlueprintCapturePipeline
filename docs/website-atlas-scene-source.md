@@ -162,7 +162,12 @@ A planner call the provider refuses before any work
 (`job_retry_policy.provider_refusal_unbilled`) is settled at $0, which releases
 its hold, spends no repair and never ends the call as
 `atlas_scene_planner_output_invalid`; a 5xx or a timeout is still held at its
-reservation as a call of unknown outcome.
+reservation as a call of unknown outcome. The same rule holds for the room's
+other OpenAI calls: an image edit (`website_image_completion`), an image
+repair plan (`website_image_repair_agent`) and an object research
+(`website_object_spec_research`) refused this way are settled at $0, ask for
+no reconciliation and are asked again by the job's next run under a new
+reservation; an object research refused this way counts no refused attempt.
 
 Nothing here measures anything. Scale comes from named reference assumptions,
 `metric_measurement_proven` stays false, and qualification still needs the
