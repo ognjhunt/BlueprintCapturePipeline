@@ -355,8 +355,12 @@ the grant, and bought nothing: no Atlas job is created, so its seven days have n
   and the job's cap. A failure of that run is retried by this policy like any preparation's
   (`failure_retry`; a replay of the other held kinds stays the drain's own, as before).
 - The window is the grant's, as in section 4. The grant was issued at upload, so a request that comes late
-  meets `consent_expired` at the replay's grant read, which ends the job. The WebApp therefore issues a fresh
-  or extended grant when it records a request whose job's grant has ended or ends within the build's window,
-  before it pushes the request; and its window and no-grant sweeps leave a waiting job alone.
+  would meet `consent_expired` at the replay's grant read, which ends the job. Nothing issues or extends a
+  grant for a request. The WebApp records and pushes a request only while the job's grant has at least three
+  days left to run (or the job has no grant yet), checks again before every push, and otherwise refuses the
+  company's press and tells both pages no simulation will be built
+  (`Blueprint-WebApp/server/utils/simulationRequest.ts`). So a company can ask in about the first four days
+  after a site's video arrives. Whether a request should start a window of its own is the owner's decision
+  and has not been made. The WebApp's window and no-grant sweeps leave a waiting job alone.
 - The workspace stays while a company can ask: a site's job while it is listed for companies, an internal
   test job while its grant is live (`website_scene_workspace_retention.waiting_for_simulation_request`).

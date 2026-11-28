@@ -7,7 +7,9 @@ other lanes remain compatibility unless a recorded blocker in it requires their
 smallest reusable component.
 
 Beta work builds the Pipeline's part of the job packet from retained job video:
-the simulation of the site with the job's object in it and the success rule.
+the sound-free clip for every job and, when a deployment company asks for it
+(owner, 2026-11-28; `website_simulation_request`), the simulation of the site
+with the job's object in it and the success rule.
 Blueprint no longer runs robot software in the simulation (the early trial was
 dropped on 2026-11-14); a scripted run only checks the simulation. Reuse
 existing evidence and run the supported configurations or the smallest

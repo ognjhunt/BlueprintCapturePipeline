@@ -9,8 +9,9 @@ A site films one recurring job once and uploads the video through the WebApp.
 Blueprint turns it into a **job packet** that any robot deployment company can
 evaluate without visiting, sends it to deployment companies Blueprint has
 approved, and tells the site who will take the job and on what evidence. This
-repo is the packet factory: it reads the video, builds the simulation of the
-site with the job's object in it, and carries the job's success rule. WebApp
+repo is the packet factory: it reads the video, publishes the job's sound-free
+clip, builds the simulation of the site with the job's object in it when a
+deployment company asks for it, and carries the job's success rule. WebApp
 owns the site side: the job page, the first look on paper, the site's
 permissions and the responses of deployment companies.
 
@@ -29,6 +30,13 @@ run, the provider terms and retention, faces blurred in the frames sent to
 World Labs, and the spend limits and admissions below. In build, Pipeline
 first: a website job's room step ships the room as filmed, flagged, for
 anything else, and a stuck job retries by itself.
+
+Owner direction, 2026-11-28: the goal is more pilots. A deployment company
+publishes one standing pilot offer and a site asks for a pilot with one press
+(WebApp). The simulation of a site is built when an approved deployment
+company asks for it on that job (`website_simulation_request`); until then a
+job keeps its sound-free clip and buys nothing. A video is still required to
+post a job.
 
 Blueprint no longer runs robot software in the simulation. The owner dropped
 the early trial of openly available robot software on 2026-11-14: its timer is

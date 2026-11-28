@@ -19,6 +19,13 @@ Owner direction, 2026-11-20. A video is required to post a job. The site can
 save its description in a private draft and film or upload through the same
 job link.
 
+Owner direction, 2026-11-28. The goal is more pilots. A deployment company
+publishes one standing pilot offer; a site sees the offers that fit its job on
+paper and asks for a pilot with one press; the company's confirmation is the
+introduction. The simulation of a site is built when an approved deployment
+company asks for it on that job, not for every job. A video is still required
+to post a job.
+
 ### What Blueprint Does
 
 A site films one recurring job once. Blueprint turns the video into a **job
@@ -34,15 +41,16 @@ visit. It is a means, not the product.
 Who it is for:
 
 - **The site** is the user and pays nothing. It sends one video and gets a
-  first look on paper, a simulation of its site with the job in it, and the
+  first look on paper, the pilot offers that fit its job on paper, and the
   responses of deployment companies: who will take the job, who will not, and
-  why.
+  why. A simulation of its site is built when a company asks for one.
 - **The deployment company** is the customer. It gets qualified jobs it would
-  not otherwise see, in one format, with a simulation attached, so it can
-  decide without a site visit. Deployment companies will pay; how is not
-  decided, and no price is stated anywhere. Each introduction is recorded as a
-  billable event. Nothing is charged and no price is stated until the owner
-  sets one.
+  not otherwise see, in one format, each with the site's video and a
+  simulation when it asks for one, so it can decide without a site visit. It
+  can publish one standing pilot offer, so that sites whose jobs fit can ask
+  for its pilot. Deployment companies will pay; how is not decided, and no
+  price is stated anywhere. Each introduction is recorded as a billable event.
+  Nothing is charged and no price is stated until the owner sets one.
 - Later, and only if they show they want it: large multi-site buyers (an
   independent comparison across deployment companies) and robot-software
   makers (real commercial jobs to test against, only with the sites' rights).
@@ -54,20 +62,37 @@ The job packet has one format for every job:
 3. The first look on paper: which kinds of robot most likely fit, from
    published specifications and a cited track record. It is the site's:
    deployment companies are not shown it.
-4. The simulation of the site, with the job's object in it.
+4. The simulation of the site, with the job's object in it, built when a
+   deployment company asks for it (owner, 2026-11-28).
 5. The success rule: what counts as the job done.
 
 Approved companies can review and respond once the job has a description and
 a playable, sound-free video with the site's permission. The simulation
-appears in the same job as soon as it is ready.
+appears in the same job once a company has asked for it and it is ready.
 
 The site's answer is who will take the job, and on what evidence: the
 responses of deployment companies. Until responses exist the site sees the
-first look and the simulation, and is told plainly where the job stands: not
-yet sent, sent and waiting, or no response yet. Nothing promises a response
-that has not been given.
+first look and the pilot offers that fit, and is told plainly where the job
+stands: not yet sent, sent and waiting, or no response yet. Nothing promises a
+response that has not been given.
 
-The simulation lets a company see and measure the site without a visit: once
+Pilot offers (owner, 2026-11-28). An approved deployment company can publish
+one standing pilot offer: the kinds of job it takes, its limits, and its own
+terms for a pilot (how long it runs, what the site pays if anything, what the
+site provides, when it can start, how it charges afterwards). A site's job
+page shows the offers that fit its job on paper, from what the site said and
+what each company says it takes; no estimate from the video is used for a
+limit, and an answer the site has not given never rules an offer out. The site
+asks for a pilot with one press for each company. When the company confirms,
+Blueprint introduces them, as below. A company's terms are its own, given
+before a site visit: they are not a quote, and Blueprint does not check or
+guarantee them. After the introduction both sides see a pilot sheet, a summary
+of what each said; the site and the company agree the pilot between them.
+
+A simulation is built when an approved deployment company asks for it on that
+job (owner, 2026-11-28); one request builds it for every company. Until then
+the job has its sound-free video and nothing is spent on a simulation. The
+simulation lets a company see and measure the site without a visit: once
 a job's simulation exists a company can view it in the browser or download it
 (the site's scene with the job's object in it, and what counts as done) and
 test in its own tools. A company answers Apply, Not a fit or Need more
@@ -87,10 +112,10 @@ only checks Blueprint's own simulation.
 Sharing is the service. A site that sends a job agrees once, in the statement
 it accepts (recording statement `2026-11-12.v4` or later), that Blueprint
 shares the job with the deployment companies it has approved: the site's
-description, its video without its sound, the simulation built from it and the
-success rule. The statement also covers the first look, which since
-2026-11-25 stays with the site. There is no share button, no
-share setting and no pause. A job under an older statement is not shown to any
+description, its video without its sound, the simulation built from it when
+one is built, and the success rule. The statement also covers the first look,
+which since 2026-11-25 stays with the site. There is no share button, no share
+setting and no pause. A job under an older statement is not shown to any
 company until its site accepts the current one.
 
 A site's name, street address and contact details are never shared without
@@ -108,7 +133,8 @@ Blueprint stands between a site's video and an introduction. When a job is
 ready it is shown to every approved deployment company, and each is emailed
 about it unless it turned job emails off. People act only where their own decision is the
 point: a site sends, confirms, asks for an introduction and can withdraw; a
-company applies and answers; Blueprint approves a company once.
+company publishes its pilot offer, applies and answers; Blueprint approves a
+company once.
 
 Paused (keep the code, start no new work): hardening the automatic test for
 any kind of job, for several objects and for unattended scale; standing
